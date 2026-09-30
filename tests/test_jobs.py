@@ -9,7 +9,16 @@ import pytest
 from conftest import DSN, audit_rows, wait_for
 
 from vex_platform.actor import Actor
-from vex_platform.jobs import JobConflict, Registry, RunStopped, StepContext, StepError, StepRefused
+from vex_platform.jobs import (
+    InvalidJob,
+    JobConflict,
+    Registry,
+    RunStopped,
+    StepContext,
+    StepError,
+    StepRefused,
+)
+from vex_platform.jobs.runtime import kinds_info
 
 pytestmark = pytest.mark.usefixtures("dsn")
 
@@ -70,6 +79,32 @@ async def test_gated_first_step_and_run_override(make_runtime):
     await wait_for(runtime, free.id, ["succeeded"])
     with pytest.raises(JobConflict):
         await runtime.resume(free.id)
+
+
+async def test_kind_gates_change_while_a_run_goes(make_runtime):
+    calls: list[str] = []
+    gate = asyncio.Event()
+    registry = three_steps(calls)
+
+    async def slow_a(ctx: StepContext) -> None:
+        calls.append("a")
+        await gate.wait()
+    registry.steps["a"] = slow_a
+    runtime = await make_runtime(registry)
+    run = (await runtime.enqueue("abc")).run
+    own = (await runtime.enqueue("abc", pause_before=[])).run
+    await wait_for(runtime, run.id, ["running"])
+    await wait_for(runtime, own.id, ["running"])
+
+    registry.set_pause_before("abc", ["c"])  # after both started
+    assert [k["pause_before"] for k in kinds_info(registry)] == [["c"]]
+    gate.set()
+    run = await wait_for(runtime, run.id, ["paused"])
+    assert run.step == "c"
+    await wait_for(runtime, own.id, ["succeeded"])  # its own (empty) list wins
+    assert (await runtime.enqueue("abc", step="c")).run.state == "paused"
+    with pytest.raises(InvalidJob):
+        registry.set_pause_before("abc", ["nope"])
 
 
 async def test_pause_queued_and_running(make_runtime):

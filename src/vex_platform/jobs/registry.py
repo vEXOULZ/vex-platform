@@ -14,7 +14,7 @@ shared by every kind that lists it::
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from .errors import InvalidJob
@@ -34,7 +34,8 @@ class JobKind:
     ``cancel_mode``: "interrupt" cancels a running step at once (asyncio cancellation, like a
     shutdown); "cooperative" only flags the run, and the step stops at its next
     ``ctx.check_stop()`` — for steps that must not be interrupted mid-write.
-    ``pause_before``: steps runs of this kind pause before by default (a run's own list overrides).
+    ``pause_before``: steps runs of this kind pause before by default (a run's own list overrides);
+    ``Registry.set_pause_before`` changes it while runs are going.
     """
 
     name: str
@@ -77,6 +78,14 @@ class Registry:
         kind = JobKind(name, tuple(steps), **options)
         self.kinds[name] = kind
         return kind
+
+    def set_pause_before(self, kind: str, steps: Iterable[str]) -> JobKind:
+        """Change a kind's default gates, say from a setting an admin edits: queued, paused and running
+        runs without their own ``pause_before`` follow it from their next step boundary."""
+        steps = tuple(steps)
+        self.check_steps(kind, steps)
+        self.kinds[kind] = replace(self.kinds[kind], pause_before=steps)
+        return self.kinds[kind]
 
     def get(self, name: str) -> JobKind:
         try:

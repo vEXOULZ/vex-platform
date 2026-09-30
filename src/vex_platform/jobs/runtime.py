@@ -724,7 +724,9 @@ class JobRuntime:
             await self._update(c, ctx.run_id, step=step, payload=ctx.payload, subject=ctx.subject)
             if run.cancel_requested:
                 return "stop"
-            gates = ctx.kind.pause_before if run.pause_before is None else run.pause_before
+            # The registry's kind, not ctx.kind: its default gates may have changed since the run started.
+            kind = self.registry.kinds.get(run.kind, ctx.kind)
+            gates = kind.pause_before if run.pause_before is None else run.pause_before
             if run.pause_next or step in gates:
                 ctx.run = await self._update(c, ctx.run_id, state="paused", pause_next=False,
                                              procrastinate_job_id=None)
