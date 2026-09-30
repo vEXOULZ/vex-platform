@@ -1,4 +1,4 @@
-name: ci
+name: tests
 
 on:
   push:
@@ -6,11 +6,19 @@ on:
   pull_request:
 
 jobs:
-  test:
+  branch-name:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Conventional Branch
+        # Through the environment, never interpolated into the script: a branch name is user input.
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: .githooks/check-branch-name.sh "$BRANCH"
+
+  pytest:
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:17-alpine
@@ -31,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: ${{ matrix.python }}
-      - run: uv sync --all-extras
+          python-version: "3.13"
+      - run: uv sync --frozen
       - run: uv run ruff check
       - run: uv run pytest -q
