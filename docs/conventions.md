@@ -110,6 +110,7 @@ paused ◀──────┘
 ```
 
 - `queued`, `running` and `paused` are **active**; `succeeded`, `failed` and `cancelled` are **finished**.
+- A run pauses before a step listed in its own `pause_before`, or, when that is NULL, in its kind's. `Registry.set_pause_before(kind, steps)` changes a kind's list while runs are going (an admin setting, for example). Gates are checked when a run moves on to a step, so the change applies from each run's next step boundary.
 - A run in `running` goes back to `queued` when the process stops (shutdown, crash, or a stalled worker). The next start resumes it at its checkpoint; `reconcile()` does this at startup and every `reconcile_interval` seconds.
 
 ### Steps

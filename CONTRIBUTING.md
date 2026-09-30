@@ -39,7 +39,9 @@ It exists for the day you need it, not for the day you are in a hurry.
 
 ## Releases
 
-Both applications pin a tag (`vex-platform @ git+https://github.com/vEXOULZ/vex-platform@v0.1.0`), so
+Both applications pin a tag's release tarball
+(`vex-platform @ https://github.com/vEXOULZ/vex-platform/archive/refs/tags/v0.2.0.tar.gz`; not `git+`,
+which needs git in their slim Docker images), so
 a change reaches them only when a release is tagged on `main` and their pin moves. Tags follow semver;
 anything that changes a public signature, a table or an API shape is a minor bump before 1.0.
 
