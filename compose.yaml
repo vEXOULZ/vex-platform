@@ -1,0 +1,12 @@
+# Test database only. `docker compose up -d` then `pytest`.
+services:
+  postgres-test:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: vex
+      POSTGRES_PASSWORD: vex
+      POSTGRES_DB: vex_platform_test
+    ports:
+      - "127.0.0.1:55434:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
