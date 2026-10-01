@@ -12,7 +12,7 @@ from psycopg import AsyncConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..actor import Actor
-from ..api.errors import under
+from ..api.errors import ApiError, under
 from ..api.models import ApiModel, UtcDatetime
 from ..api.pagination import MAX_LIMIT, Page, decode_cursor, page_of
 from . import psycopg as audit_pg
@@ -33,6 +33,7 @@ class AuditOut(ApiModel):
     action: str
     target: str | None
     scope: str | None
+    scope_name: str | None = None
     outcome: str
     before: Any = None
     after: Any = None
@@ -47,9 +48,17 @@ def audit_router(
     *,
     table: str = "audit_log",
     visible_scopes: Callable[[Request], Awaitable[Sequence[str] | None]] | None = None,
+    find_actor: Callable[[Request, str], Awaitable[tuple[str, str] | None]] | None = None,
+    labels: Callable[[Request, list[dict[str, Any]]], Awaitable[None]] | None = None,
 ) -> APIRouter:
     """``connect()`` yields a psycopg connection (``pool.connection``); ``auth`` is the dependency that
-    admits a caller. ``visible_scopes(request)`` may limit a caller to some channels (None: all)."""
+    admits a caller (and sets ``request.state.actor``).
+
+    ``visible_scopes(request)`` may limit a caller to some channels (None: all); the caller's own rows
+    stay visible outside them. ``find_actor(request, login)`` turns ``?actor=<login>`` into an
+    ``(actor_kind, actor_id)``, so rows written before the login was known match too; without it, or
+    when it finds nobody, the login matches ``actor_login``. ``labels(request, rows)`` may fill rows in
+    place before they are served: a missing ``actor_login``, and ``scope_name``."""
     router = APIRouter(tags=["audit"], dependencies=[Depends(auth)])
 
     @router.get("/audit", response_model=Page[AuditOut])
@@ -60,18 +69,30 @@ def audit_router(
         scope: str | None = None,
         actor_kind: str | None = None,
         actor_id: str | None = None,
+        actor: Annotated[str | None, Query(min_length=1, description="'me', or a login")] = None,
         outcome: str | None = None,
         cursor: str | None = None,
         limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = 50,
     ) -> Page[Any]:
         key = decode_cursor(cursor, size=1)
+        caller = getattr(request.state, "actor", None)
+        me = (caller.kind, caller.id) if isinstance(caller, Actor) and caller.id else None
         scopes = await visible_scopes(request) if visible_scopes else None
+        by: tuple[tuple[str, str] | None, str] | None = None
+        if actor is not None and actor.lower() == "me":
+            if me is None:
+                raise ApiError(400, "invalid", "actor=me needs an identified caller")
+            actor_kind, actor_id = me
+        elif actor is not None:
+            by = (await find_actor(request, actor) if find_actor else None, actor)
         async with connect() as conn:
             rows = await audit_pg.read(
                 conn, table=table, limit=limit + 1, before_id=int(key[0]) if key else None,
                 actor_kind=actor_kind, actor_id=actor_id, action=action, target=target,
-                scope=scope, scopes=scopes, outcome=outcome,
+                scope=scope, scopes=scopes, outcome=outcome, own=me, actor=by,
             )
+        if labels is not None:
+            await labels(request, rows)
         return page_of([AuditOut(**r) for r in rows], limit, lambda r: [r.id])
 
     return router

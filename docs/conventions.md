@@ -84,9 +84,11 @@ There is one table shape, `audit_log`, created by `migrations.audit_sql(1, table
   - These rows go through a connection of their own.
   - A failure to write one is logged and never changes the response.
 - **The table is append-only.** Application roles get `SELECT, INSERT` on it and nothing more.
-- **Read** it with `GET /api/v2/audit?action=&target=&scope=&actor_kind=&actor_id=&outcome=&cursor=`.
+- **Read** it with `GET /api/v2/audit?action=&target=&scope=&actor_kind=&actor_id=&actor=&outcome=&cursor=`.
   - `action=vod.` matches a prefix, and `target=vod:` matches every target of a type.
-  - `visible_scopes` can limit a caller to some channels.
+  - `visible_scopes` can limit a caller to some channels. The caller's own rows stay visible outside them.
+  - `actor=me` is the caller's rows. `actor=<login>` is someone's: the app's `find_actor` hook turns the login into an actor kind and id, so rows written without a login match too; otherwise the login matches `actor_login`, in any case.
+  - The app's `labels` hook may fill a row's missing `actor_login` and set `scope_name` (a channel's name, say) before the page is served. The table itself never changes.
   - A job run keeps the `scope` it was queued with, and every audit row about it (`job.*`, and a step's `ctx.audit` unless it names another) carries that scope, so a caller limited to a channel sees the whole life of its runs.
 
 ## Jobs
