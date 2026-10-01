@@ -333,6 +333,33 @@ class JobRuntime:
             )
         return [JobRun.from_row(r) for r in rows]
 
+    async def counts(
+        self,
+        *,
+        kind: str | None = None,
+        subject: str | None = None,
+        since: dt.datetime | None = None,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> dict[str, int]:
+        """How many runs are in each state (every state, 0 when none). With ``since``, finished runs
+        count only when they finished at or after it; active runs always count."""
+        clauses, params = ["TRUE"], []
+        if kind is not None:
+            clauses.append("kind = %s")
+            params.append(kind)
+        if subject is not None:
+            clauses.append("subject = %s")
+            params.append(subject)
+        if since is not None:
+            clauses.append("(state = ANY(%s) OR finished_at >= %s)")
+            params += [list(ACTIVE), since]
+        async with self.transaction(conn) as c:
+            rows = await self._all(
+                c, f"SELECT state, count(*) AS n FROM job_runs WHERE {' AND '.join(clauses)} GROUP BY state", params
+            )
+        found = {r["state"]: r["n"] for r in rows}
+        return {state: found.get(state, 0) for state in STATES}
+
     async def find(
         self,
         kind: str,

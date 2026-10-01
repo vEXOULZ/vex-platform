@@ -28,6 +28,7 @@ from vex_platform.audit import psycopg as audit_pg
 from vex_platform.audit.router import AuditRefusalsMiddleware, audit_router
 from vex_platform.jobs import Registry
 from vex_platform.jobs.router import jobs_router
+from vex_platform.jobs.run import STATES
 from vex_platform.logging import configure_logging, redact
 
 
@@ -272,6 +273,12 @@ async def test_jobs_routes(make_runtime):
 
         r = await c.get("/api/v2/jobs", params={"state": ["succeeded"], "kind": "demo"}, headers=vex)
         assert [j["id"] for j in r.json()["items"]] == [job["id"]]
+        r = await c.get("/api/v2/jobs/counts", params={"kind": "demo"}, headers=vex)
+        assert r.json() == {"counts": {**dict.fromkeys(STATES, 0), "succeeded": 1}, "total": 1}
+        r = await c.get("/api/v2/jobs/counts", params={"since": "2999-01-01T00:00:00Z"}, headers=vex)
+        assert r.json()["total"] == 0
+        r = await c.get("/api/v2/jobs/counts", params={"subject": "vod:2"}, headers=vex)
+        assert r.json()["total"] == 0
         assert (await c.get("/api/v2/jobs/999", headers=vex)).json()["code"] == "job_not_found"
         r = await c.post("/api/v2/jobs", json={"kind": "nope"}, headers=vex)
         assert (r.status_code, r.json()["code"]) == (422, "invalid_job")
