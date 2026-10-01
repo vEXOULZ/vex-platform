@@ -87,6 +87,7 @@ There is one table shape, `audit_log`, created by `migrations.audit_sql(1, table
 - **Read** it with `GET /api/v2/audit?action=&target=&scope=&actor_kind=&actor_id=&outcome=&cursor=`.
   - `action=vod.` matches a prefix, and `target=vod:` matches every target of a type.
   - `visible_scopes` can limit a caller to some channels.
+  - A job run keeps the `scope` it was queued with, and every audit row about it (`job.*`, and a step's `ctx.audit` unless it names another) carries that scope, so a caller limited to a channel sees the whole life of its runs.
 
 ## Jobs
 
@@ -95,7 +96,7 @@ There is one table shape, `audit_log`, created by `migrations.audit_sql(1, table
 ### Tables
 
 - Everything lives in its own Postgres schema, `jobs` by default.
-- **Authoritative record:** `job_runs`, together with its log `job_run_events`. Both are created by `migrations.jobs_sql(1, schema=...)`, alongside procrastinate's own tables.
+- **Authoritative record:** `job_runs`, together with its log `job_run_events`. Both are created by `migrations.jobs_sql(1, schema=...)`, alongside procrastinate's own tables; `jobs_sql(2)` adds `job_runs.scope`.
 - **Procrastinate's side:** each queued run has one procrastinate job (`vex.run`, holding `run_id`). That job is transport only, and it is deleted once it finishes.
 
 ### States
@@ -175,10 +176,10 @@ async def download(ctx: StepContext) -> None:
 ## Migrations and procrastinate versions
 
 - Applications apply the frozen SQL from their own migrations:
-  - Alembic: `migrations.apply(op, migrations.jobs_sql(1))`, and the same for `audit_sql`. It works over psycopg, psycopg2 and asyncpg, inside the revision's transaction.
+  - Alembic: `migrations.apply(op, migrations.jobs_sql(1))`, and the same for `audit_sql`. Each later revision (`jobs_sql(2)`, ...) goes in a new revision of the application's own. It works over psycopg, psycopg2 and asyncpg, inside the revision's transaction.
   - Plain SQL runners: execute the string as is.
 - **Procrastinate is pinned exactly** (`procrastinate==3.10.0`), because `jobs_sql(1)` is its schema as of that version.
-  - Upgrading procrastinate means adding its migration files as `jobs_sql(2)`, applied by a new migration in each application, and releasing a new vex-platform version.
+  - Upgrading procrastinate means adding its migration files as the next `jobs_sql` revision, applied by a new migration in each application, and releasing a new vex-platform version.
   - Never edit a released revision's SQL.
 - **`search_path`:** procrastinate's SQL, including its triggers, uses unqualified table names.
   - The runtime's pool sets `search_path` to the jobs schema.

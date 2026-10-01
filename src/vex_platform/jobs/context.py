@@ -98,7 +98,9 @@ class StepContext:
 
     async def audit(self, action: str, **fields: Any) -> int | None:
         """Record an audit row for something this step did, as the actor that queued the run, with
-        ``job_run_id`` set. Needs the runtime's ``audit_table``; None without it."""
+        ``job_run_id`` set and, unless given, the run's ``scope``. Needs the runtime's ``audit_table``; None
+        without it."""
+        fields.setdefault("scope", self.run.scope)
         return await self.runtime._audit_step(
             AuditEntry(action, actor=self.actor, job_run_id=self.run_id, **fields)
         )

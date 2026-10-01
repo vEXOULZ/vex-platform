@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import time
 from typing import Any
 
@@ -426,10 +427,24 @@ async def test_step_context_extras(make_runtime):
     registry.kind("ctx", ["work"])
     runtime = await make_runtime(registry, context_factory=AppContext, actor=None) if False else \
         await make_runtime(registry, context_factory=AppContext)
-    run = (await runtime.enqueue("ctx", actor=VEX)).run
+    run = (await runtime.enqueue("ctx", actor=VEX, scope="456")).run
     run = await wait_for(runtime, run.id, ["succeeded"])
-    assert run.subject == "vod:77"
+    assert run.subject == "vod:77" and run.scope == "456"
     events = await runtime.events.list(run.id)
     assert any(e["progress"] == {"done": 1, "total": 4, "unit": "parts"} for e in events)
     [row] = await audit_rows("vod.")
-    assert (row["actor_login"], row["job_run_id"]) == ("vex", run.id)
+    assert (row["actor_login"], row["job_run_id"], row["scope"]) == ("vex", run.id, "456")
+
+
+async def test_every_audit_row_of_a_run_carries_its_scope(make_runtime):
+    runtime = await make_runtime(three_steps([]))
+    later = dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)
+    run = (await runtime.enqueue("abc", payload={}, actor=VEX, scope="456", not_before=later)).run
+    assert run.scope == "456"
+    await runtime.pause(run.id, actor=VEX)
+    await runtime.resume(run.id, actor=VEX)
+    await runtime.cancel(run.id, actor=VEX, wait=0)
+    rows = await audit_rows("job.")
+    assert [(r["action"], r["scope"]) for r in rows] == [
+        ("job.enqueue", "456"), ("job.pause", "456"), ("job.resume", "456"), ("job.cancel", "456"),
+    ]
