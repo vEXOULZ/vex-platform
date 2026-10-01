@@ -448,3 +448,54 @@ async def test_every_audit_row_of_a_run_carries_its_scope(make_runtime):
     assert [(r["action"], r["scope"]) for r in rows] == [
         ("job.enqueue", "456"), ("job.pause", "456"), ("job.resume", "456"), ("job.cancel", "456"),
     ]
+
+
+async def test_step_enqueue_links_children_to_their_parent(make_runtime):
+    registry = Registry()
+
+    @registry.step()
+    async def fan_out(ctx: StepContext) -> None:
+        for n in (1, 2):
+            await ctx.enqueue("child", subject=f"vod:{n}", payload={"n": n})
+
+    @registry.step()
+    async def leaf(ctx: StepContext) -> None:
+        if ctx.payload["n"] == 1:
+            await ctx.enqueue("leafless", subject="vod:1")
+
+    @registry.step()
+    async def noop(ctx: StepContext) -> None:
+        pass
+
+    registry.kind("parent", ["fan_out"])
+    registry.kind("child", ["leaf"])
+    registry.kind("leafless", ["noop"])
+    runtime = await make_runtime(registry)
+    root = (await runtime.enqueue("parent", subject="channel:1", actor=VEX, scope="chan")).run
+    await wait_for(runtime, root.id, ["succeeded"])
+
+    children = await runtime.list(parent_id=root.id)
+    assert sorted(c.subject for c in children) == ["vod:1", "vod:2"]
+    for child in children:
+        assert child.parent_id == root.id and child.scope == "chan"
+        assert child.actor == Actor("job", str(root.id), "parent", "job")
+        await wait_for(runtime, child.id, ["succeeded"])
+    [grandchild] = await runtime.list(kind="leafless")
+    assert grandchild.parent_id in {c.id for c in children}
+
+    for start in (root.id, grandchild.id):
+        root_id, runs, truncated = await runtime.related(start)
+        assert (root_id, truncated) == (root.id, False)
+        assert [r.id for r in runs] == sorted([root.id, grandchild.id, *(c.id for c in children)])
+    _, runs, truncated = await runtime.related(root.id, limit=2)
+    assert len(runs) == 2 and truncated
+
+    alone = (await runtime.enqueue("leafless", subject="vod:9")).run
+    root_id, runs, _ = await runtime.related(alone.id)
+    assert root_id == alone.id and [r.id for r in runs] == [alone.id] and runs[0].parent_id is None
+
+    # a "job" actor alone sets the parent too
+    manual = (await runtime.enqueue("leafless", actor=Actor("job", str(root.id), "parent", "job"))).run
+    assert manual.parent_id == root.id
+    rows = [r for r in await audit_rows("job.enqueue") if r["after"].get("parent_id") == root.id]
+    assert len(rows) == 3

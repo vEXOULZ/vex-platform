@@ -16,7 +16,7 @@ from .events import Level, progress
 if TYPE_CHECKING:
     from .registry import JobKind
     from .run import JobRun
-    from .runtime import JobRuntime
+    from .runtime import Enqueued, JobRuntime
 
 _logger = structlog.get_logger("vex_platform.jobs.run")
 
@@ -95,6 +95,15 @@ class StepContext:
         """Raise ``RunStopped`` when ``should_stop()``."""
         if await self.should_stop():
             raise RunStopped()
+
+    async def enqueue(self, kind: str, subject: str | None = None, payload: dict[str, Any] | None = None,
+                      **options: Any) -> Enqueued:
+        """Queue a child run: its actor is this run (``job:<id>``, via ``job``) and its parent this run, so
+        GET /jobs/{id}/related shows the tree; ``scope`` defaults to this run's. Other options as
+        ``JobRuntime.enqueue``."""
+        options.setdefault("actor", Actor("job", str(self.run_id), self.kind.name, "job"))
+        options.setdefault("scope", self.run.scope)
+        return await self.runtime.enqueue(kind, subject, payload, parent_id=self.run_id, **options)
 
     async def audit(self, action: str, **fields: Any) -> int | None:
         """Record an audit row for something this step did, as the actor that queued the run, with

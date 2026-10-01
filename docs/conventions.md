@@ -98,7 +98,7 @@ There is one table shape, `audit_log`, created by `migrations.audit_sql(1, table
 ### Tables
 
 - Everything lives in its own Postgres schema, `jobs` by default.
-- **Authoritative record:** `job_runs`, together with its log `job_run_events`. Both are created by `migrations.jobs_sql(1, schema=...)`, alongside procrastinate's own tables; `jobs_sql(2)` adds `job_runs.scope`.
+- **Authoritative record:** `job_runs`, together with its log `job_run_events`. Both are created by `migrations.jobs_sql(1, schema=...)`, alongside procrastinate's own tables; `jobs_sql(2)` adds `job_runs.scope` and `jobs_sql(3)` adds `job_runs.parent_id`.
 - **Procrastinate's side:** each queued run has one procrastinate job (`vex.run`, holding `run_id`). That job is transport only, and it is deleted once it finishes.
 
 ### States
@@ -150,6 +150,12 @@ async def download(ctx: StepContext) -> None:
 - **On a duplicate**, `enqueue` either returns the existing run, merges the new payload into it (`on_duplicate="merge"`, audited as `job.merge`), or raises `JobConflict`.
 - **`lock`:** `JobKind.lock(run)` returns a string, and runs with the same lock never run at the same time (procrastinate's `lock`).
   - A queued run holds its lock **even while it waits out a retry backoff**, so later runs with the same lock wait behind it. Keep lock keys narrow, for example the subject rather than the kind.
+
+### Runs that queue runs
+
+- A step queues a child run with `await ctx.enqueue(kind, subject, payload, **options)`. The child's actor is the parent run (`Actor("job", "<run id>", "<kind>", "job")`), its `parent_id` is the parent's id, and its `scope` defaults to the parent's.
+- Plain `enqueue` with a `"job"` actor whose id is a run id sets `parent_id` the same way; `parent_id=` sets it explicitly. A duplicate (see below) keeps the parent it had.
+- `GET /jobs?parent=<id>` lists one run's children. `GET /jobs/{id}/related` (`runtime.related`) returns the whole tree the run is in as `{root_id, items, truncated}`: the root and every run under it, oldest first, linked by `parent_id`.
 
 ### Enqueuing inside your own transaction
 
