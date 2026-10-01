@@ -304,11 +304,12 @@ class JobRuntime:
         states: Sequence[str] | None = None,
         kind: str | None = None,
         subject: str | None = None,
+        parent_id: int | None = None,
         before_id: int | None = None,
         limit: int = 50,
         conn: AsyncConnection[Any] | None = None,
     ) -> list[JobRun]:
-        """Newest first."""
+        """Newest first; with ``parent_id``, only the runs that run queued."""
         clauses, params = ["TRUE"], []
         if states:
             unknown = set(states) - set(STATES)
@@ -322,6 +323,9 @@ class JobRuntime:
         if subject is not None:
             clauses.append("subject = %s")
             params.append(subject)
+        if parent_id is not None:
+            clauses.append("parent_id = %s")
+            params.append(parent_id)
         if before_id is not None:
             clauses.append("id < %s")
             params.append(before_id)
@@ -359,6 +363,36 @@ class JobRuntime:
             )
         found = {r["state"]: r["n"] for r in rows}
         return {state: found.get(state, 0) for state in STATES}
+
+    async def related(
+        self, run_id: int, *, limit: int = 200, conn: AsyncConnection[Any] | None = None
+    ) -> tuple[int, list[JobRun], bool]:
+        """The tree ``run_id`` is in: its root (the furthest ancestor) and every run under it, oldest first,
+        at most ``limit``. Returns (root id, runs, whether some were left out). A run that nothing queued
+        and that queued nothing comes back alone."""
+        async with self.transaction(conn) as c:
+            await self.get(run_id, conn=c)
+            up = await self._one(
+                c,
+                "WITH RECURSIVE up(id, parent_id, depth) AS ("
+                " SELECT id, parent_id, 0 FROM job_runs WHERE id = %s"
+                " UNION ALL SELECT r.id, r.parent_id, up.depth + 1 FROM job_runs r JOIN up ON r.id = up.parent_id"
+                " WHERE up.depth < 100)"
+                " SELECT id FROM up ORDER BY depth DESC LIMIT 1",
+                (run_id,),
+            )
+            root = up["id"] if up else run_id
+            rows = await self._all(
+                c,
+                "WITH RECURSIVE down(id, depth) AS ("
+                " SELECT id, 0 FROM job_runs WHERE id = %s"
+                " UNION ALL SELECT r.id, down.depth + 1 FROM job_runs r JOIN down ON r.parent_id = down.id"
+                " WHERE down.depth < 100)"
+                f" SELECT {SELECT} FROM job_runs WHERE id IN (SELECT id FROM down) ORDER BY id LIMIT %s",
+                (root, limit + 1),
+            )
+        runs = [JobRun.from_row(r) for r in rows]
+        return root, runs[:limit], len(runs) > limit
 
     async def find(
         self,
@@ -402,6 +436,7 @@ class JobRuntime:
         on_duplicate: OnDuplicate = "return",
         merge: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
         scope: str | None = None,
+        parent_id: int | None = None,
         request_id: str | None = None,
         conn: AsyncConnection[Any] | None = None,
     ) -> Enqueued:
@@ -411,7 +446,12 @@ class JobRuntime:
         Dedupe: while a run of ``kind`` with the same ``queued_key`` is queued, or one with the same
         ``active_key`` is queued, running or paused, ``on_duplicate`` decides: "return" it, "merge"
         this payload into a *queued* one with ``merge(old, new)``, or "raise" JobConflict.
+
+        ``parent_id`` is the run that queued this one; an ``Actor("job", id=<run id>)`` sets it when not
+        given (``StepContext.enqueue`` does both). A duplicate keeps the parent it had.
         """
+        if parent_id is None and actor.kind == "job" and actor.id and actor.id.isdigit():
+            parent_id = int(actor.id)
         job_kind = self.registry.get(kind)
         if step is not None:
             self.registry.check_steps(kind, [step])
@@ -429,13 +469,16 @@ class JobRuntime:
                     try:
                         async with c.transaction():
                             run = await self._insert(c, kind, subject, payload, state, first, pause_before,
-                                                     not_before, queued_key, active_key, actor, scope)
+                                                     not_before, queued_key, active_key, actor, scope,
+                                                     parent_id)
                     except errors.UniqueViolation:
                         continue  # a concurrent enqueue won: go and find its run
                     if state == "queued":
                         run = await self._defer(c, run)
-                    await self._audit(c, "job.enqueue", run, actor, request_id, scope,
-                                      after={"kind": kind, "subject": subject, "step": first, "state": state})
+                    after = {"kind": kind, "subject": subject, "step": first, "state": state}
+                    if parent_id is not None:
+                        after["parent_id"] = parent_id
+                    await self._audit(c, "job.enqueue", run, actor, request_id, scope, after=after)
                     created = True
                 else:
                     run, created = await self._on_duplicate(c, existing, payload, on_duplicate, merge,
@@ -462,14 +505,15 @@ class JobRuntime:
 
     async def _insert(self, conn: AsyncConnection[Any], kind: str, subject: str | None, payload: dict[str, Any],
                       state: str, step: str, pause_before: Sequence[str] | None, not_before: dt.datetime | None,
-                      queued_key: str | None, active_key: str | None, actor: Actor, scope: str | None) -> JobRun:
+                      queued_key: str | None, active_key: str | None, actor: Actor, scope: str | None,
+                      parent_id: int | None = None) -> JobRun:
         row = await self._one(
             conn,
             "INSERT INTO job_runs (kind, subject, payload, state, step, pause_before, not_before, queued_key,"
-            " active_key, actor_kind, actor_id, actor_login, via, scope) VALUES (%s, %s, %s, %s, %s, %s, %s, %s,"
-            f" %s, %s, %s, %s, %s, %s) RETURNING {SELECT}",
+            " active_key, actor_kind, actor_id, actor_login, via, scope, parent_id) VALUES (%s, %s, %s, %s, %s,"
+            f" %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {SELECT}",
             (kind, subject, Jsonb(payload), state, step, list(pause_before) if pause_before is not None else None,
-             not_before, queued_key, active_key, actor.kind, actor.id, actor.login, actor.via, scope),
+             not_before, queued_key, active_key, actor.kind, actor.id, actor.login, actor.via, scope, parent_id),
         )
         assert row is not None
         return JobRun.from_row(row)

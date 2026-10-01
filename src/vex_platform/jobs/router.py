@@ -1,12 +1,13 @@
 """The standard job routes, mounted by each application under its ``/api/v2``.
 
-    GET    /jobs                      ?state=&kind=&subject=&cursor=&limit=
+    GET    /jobs                      ?state=&kind=&subject=&parent=&cursor=&limit=
     GET    /jobs/counts               ?kind=&subject=&since= (runs per state)
     POST   /jobs                      queue a run
     GET    /jobs/{id}
     PATCH  /jobs/{id}                 pause_before, pause_next
     POST   /jobs/{id}/pause|resume|retry|cancel
     GET    /jobs/{id}/events          ?cursor= (tail: pass back next_cursor, it is never null)
+    GET    /jobs/{id}/related         the tree of runs it is in (who queued whom)
     GET    /job-kinds
 
 Every change is audited by the runtime in its own transaction (``job.enqueue``, ``job.cancel`` ...).
@@ -53,10 +54,17 @@ class JobOut(ApiModel):
     pause_next: bool
     cancel_requested: bool
     actor: ActorOut
+    parent_id: int | None = Field(default=None, description="The run that queued this one, if a run did")
     created_at: UtcDatetime
     updated_at: UtcDatetime
     started_at: UtcDatetime | None
     finished_at: UtcDatetime | None
+
+
+class RelatedOut(ApiModel):
+    root_id: int = Field(description="The tree's root: the furthest run up the parent links")
+    items: list[JobOut] = Field(description="The root and every run under it, oldest first; parent_id links them")
+    truncated: bool = Field(description="True when the tree had more runs than ``limit``")
 
 
 class EventOut(ApiModel):
@@ -130,7 +138,8 @@ def jobs_router(
             steps=list(kind.steps) if kind else [], payload=run.payload, attempts=run.attempts,
             last_error=run.last_error, not_before=run.not_before, pause_before=run.pause_before,
             pause_next=run.pause_next, cancel_requested=run.cancel_requested,
-            actor=ActorOut(**run.actor.as_dict()), created_at=run.created_at, updated_at=run.updated_at,
+            actor=ActorOut(**run.actor.as_dict()), parent_id=run.parent_id, created_at=run.created_at,
+            updated_at=run.updated_at,
             started_at=run.started_at, finished_at=run.finished_at,
         )
 
@@ -152,11 +161,12 @@ def jobs_router(
         state: Annotated[list[str] | None, Query(description=f"One or more of {', '.join(STATES)}")] = None,
         kind: str | None = None,
         subject: str | None = None,
+        parent: Annotated[int | None, Query(description="Only the runs this run queued")] = None,
         cursor: str | None = None,
         limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = 50,
     ) -> Page[Any]:
         key = decode_cursor(cursor, size=1)
-        runs = await call(runtime.list, states=state, kind=kind, subject=subject,
+        runs = await call(runtime.list, states=state, kind=kind, subject=subject, parent_id=parent,
                           before_id=int(key[0]) if key else None, limit=limit + 1)
         return page_of([out(r) for r in runs], limit, lambda r: [r.id])
 
@@ -222,6 +232,13 @@ def jobs_router(
         items = [EventOut(**r) for r in rows]
         # Never null: a client tails the log by passing the last cursor back.
         return Page(items=items, next_cursor=encode_cursor([items[-1].id if items else after]))
+
+    @router.get("/jobs/{run_id}/related", response_model=RelatedOut)
+    async def related_jobs(
+        run_id: int, limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = 200
+    ) -> RelatedOut:
+        root, runs, truncated = await call(runtime.related, run_id, limit=limit)
+        return RelatedOut(root_id=root, items=[out(r) for r in runs], truncated=truncated)
 
     @router.get("/job-kinds", response_model=list[JobKindOut])
     async def job_kinds() -> list[JobKindOut]:

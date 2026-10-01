@@ -287,6 +287,39 @@ async def test_jobs_routes(make_runtime):
     assert actions == ["job.enqueue", "job.update", "job.resume", "job.cancel", "job.retry"]
 
 
+@pytest.mark.usefixtures("dsn")
+async def test_related_jobs_routes(make_runtime):
+    registry = Registry()
+
+    @registry.step()
+    async def fan_out(ctx):
+        await ctx.enqueue("child", subject="vod:1")
+
+    @registry.step()
+    async def leaf(ctx):
+        pass
+
+    registry.kind("parent", ["fan_out"])
+    registry.kind("child", ["leaf"])
+    runtime = await make_runtime(registry)
+    vex = {"x-test-user": "vex"}
+    async with client(make_app(runtime)) as c:
+        root = (await c.post("/api/v2/jobs", json={"kind": "parent"}, headers=vex)).json()
+        assert root["parent_id"] is None
+        await wait_for(runtime, root["id"], ["succeeded"])
+        r = await c.get("/api/v2/jobs", params={"parent": root["id"]}, headers=vex)
+        [child] = r.json()["items"]
+        assert (child["kind"], child["parent_id"], child["actor"]["kind"]) == ("child", root["id"], "job")
+
+        r = await c.get(f"/api/v2/jobs/{child['id']}/related", headers=vex)
+        body = r.json()
+        assert (body["root_id"], body["truncated"]) == (root["id"], False)
+        assert [j["id"] for j in body["items"]] == [root["id"], child["id"]]
+        r = await c.get(f"/api/v2/jobs/{root['id']}/related", params={"limit": 1}, headers=vex)
+        assert len(r.json()["items"]) == 1 and r.json()["truncated"]
+        assert (await c.get("/api/v2/jobs/999999/related", headers=vex)).json()["code"] == "job_not_found"
+
+
 def test_logging_json(capsys):
     root = logging.getLogger()
     handlers, level = root.handlers[:], root.level
