@@ -278,8 +278,8 @@ class JobRuntime:
         if self.audit_table is None:
             return
         await audit_pg.record(conn, AuditEntry(
-            action, actor=actor, target=f"job:{run.id}", scope=scope, before=before, after=after,
-            detail=detail, request_id=request_id, job_run_id=run.id,
+            action, actor=actor, target=f"job:{run.id}", scope=run.scope if scope is None else scope,
+            before=before, after=after, detail=detail, request_id=request_id, job_run_id=run.id,
         ), table=self.audit_table)
 
     def _hook(self, event: str, run: JobRun) -> None:
@@ -402,7 +402,7 @@ class JobRuntime:
                     try:
                         async with c.transaction():
                             run = await self._insert(c, kind, subject, payload, state, first, pause_before,
-                                                     not_before, queued_key, active_key, actor)
+                                                     not_before, queued_key, active_key, actor, scope)
                     except errors.UniqueViolation:
                         continue  # a concurrent enqueue won: go and find its run
                     if state == "queued":
@@ -435,14 +435,14 @@ class JobRuntime:
 
     async def _insert(self, conn: AsyncConnection[Any], kind: str, subject: str | None, payload: dict[str, Any],
                       state: str, step: str, pause_before: Sequence[str] | None, not_before: dt.datetime | None,
-                      queued_key: str | None, active_key: str | None, actor: Actor) -> JobRun:
+                      queued_key: str | None, active_key: str | None, actor: Actor, scope: str | None) -> JobRun:
         row = await self._one(
             conn,
             "INSERT INTO job_runs (kind, subject, payload, state, step, pause_before, not_before, queued_key,"
-            " active_key, actor_kind, actor_id, actor_login, via) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,"
-            f" %s, %s, %s, %s) RETURNING {SELECT}",
+            " active_key, actor_kind, actor_id, actor_login, via, scope) VALUES (%s, %s, %s, %s, %s, %s, %s, %s,"
+            f" %s, %s, %s, %s, %s, %s) RETURNING {SELECT}",
             (kind, subject, Jsonb(payload), state, step, list(pause_before) if pause_before is not None else None,
-             not_before, queued_key, active_key, actor.kind, actor.id, actor.login, actor.via),
+             not_before, queued_key, active_key, actor.kind, actor.id, actor.login, actor.via, scope),
         )
         assert row is not None
         return JobRun.from_row(row)

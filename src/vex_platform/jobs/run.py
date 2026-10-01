@@ -17,7 +17,7 @@ COLUMNS = (
     "id", "kind", "subject", "state", "step", "payload", "attempts", "last_error", "not_before",
     "pause_before", "pause_next", "cancel_requested", "queued_key", "active_key", "actor_kind",
     "actor_id", "actor_login", "via", "procrastinate_job_id", "created_at", "updated_at", "started_at",
-    "finished_at",
+    "finished_at", "scope",
 )
 SELECT = ", ".join(COLUMNS)
 
@@ -44,6 +44,7 @@ class JobRun:
     updated_at: dt.datetime
     started_at: dt.datetime | None
     finished_at: dt.datetime | None
+    scope: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod

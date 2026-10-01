@@ -11,8 +11,9 @@ vex-platform version is installed when it runs:
         migrations.apply(op, migrations.audit_sql(1, table="audit_log"))
 
 ``jobs_sql(1)`` is procrastinate 3.10.0's schema plus ``job_runs`` and ``job_run_events``, all in their own
-Postgres schema. A later procrastinate bump ships its migrations as ``jobs_sql(2)``, applied by a new
-Alembic revision in each application.
+Postgres schema. ``jobs_sql(2)`` adds ``job_runs.scope``. Each later revision (a procrastinate bump, a new
+column) is applied by a new Alembic revision in each application, and a vex-platform release that reads it
+says so in its notes.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ _IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
 # Revision -> files, applied in order inside the jobs schema.
 JOBS_REVISIONS: dict[int, tuple[str, ...]] = {
     1: ("procrastinate_3.10.0.sql", "jobs_0001.sql"),
+    2: ("jobs_0002.sql",),
 }
 AUDIT_REVISIONS: dict[int, tuple[str, ...]] = {
     1: ("audit_0001.sql",),

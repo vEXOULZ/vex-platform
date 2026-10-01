@@ -40,6 +40,7 @@ class JobOut(ApiModel):
     id: int
     kind: str
     subject: str | None
+    scope: str | None
     state: str
     step: str | None
     steps: list[str]
@@ -119,7 +120,7 @@ def jobs_router(
     def out(run: JobRun) -> JobOut:
         kind = registry.kinds.get(run.kind)
         return JobOut(
-            id=run.id, kind=run.kind, subject=run.subject, state=run.state, step=run.step,
+            id=run.id, kind=run.kind, subject=run.subject, scope=run.scope, state=run.state, step=run.step,
             steps=list(kind.steps) if kind else [], payload=run.payload, attempts=run.attempts,
             last_error=run.last_error, not_before=run.not_before, pause_before=run.pause_before,
             pause_next=run.pause_next, cancel_requested=run.cancel_requested,
