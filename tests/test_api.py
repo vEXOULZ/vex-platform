@@ -169,6 +169,62 @@ async def test_audit_routes_and_refusals():
 
 
 @pytest.mark.usefixtures("dsn")
+async def test_audit_scopes_own_rows_actor_and_labels():
+    async with connect() as conn:
+        for entry in [
+            AuditEntry("vod.update", Actor("user", "1", "vex", "web"), scope="a"),
+            AuditEntry("vod.hide", Actor("user", "2", None, "web"), scope="b"),  # written before its login
+            AuditEntry("cc.create", Actor("user", "mod", "mod", "chat"), scope="b"),
+        ]:
+            await audit_pg.record(conn, entry, table=AUDIT)
+        await conn.commit()
+
+    async def visible(request: Request) -> list[str] | None:
+        return None if request.state.actor.id == "vex" else ["a"]
+
+    async def find_actor(request: Request, login: str) -> tuple[str, str] | None:
+        return ("user", "2") if login == "two" else None
+
+    async def labels(request: Request, rows: list[dict]) -> None:
+        for row in rows:
+            row["scope_name"] = {"a": "Alpha", "b": "Beta"}.get(row["scope"])
+            row["actor_login"] = row["actor_login"] or ("two" if row["actor_id"] == "2" else None)
+
+    app = FastAPI()
+    install_error_handlers(app)
+    app.include_router(audit_router(connect, auth, table=AUDIT, visible_scopes=visible, find_actor=find_actor,
+                                    labels=labels), prefix="/api/v2")
+
+    async def actions(user: str, **params) -> list[str]:
+        r = await c.get("/api/v2/audit", params=params, headers={"x-test-user": user})
+        assert r.status_code == 200, r.text
+        return [i["action"] for i in r.json()["items"]]
+
+    async with client(app) as c:
+        assert await actions("vex") == ["cc.create", "vod.hide", "vod.update"]
+        assert await actions("mod") == ["cc.create", "vod.update"]  # scope a, and its own row in b
+        assert await actions("guest") == ["vod.update"]
+        assert await actions("mod", actor="me") == ["cc.create"]
+        assert await actions("vex", actor="two") == ["vod.hide"]  # found by id: its row has no login
+        assert await actions("vex", actor="VEX") == ["vod.update"]  # nobody found: by actor_login
+        assert await actions("guest", actor="mod") == []  # still limited to scope a
+        r = await c.get("/api/v2/audit", params={"actor": "two"}, headers={"x-test-user": "vex"})
+        [row] = r.json()["items"]
+        assert (row["actor_login"], row["scope_name"]) == ("two", "Beta")
+
+    async def anonymous(request: Request) -> None:
+        pass
+
+    bare = FastAPI()
+    install_error_handlers(bare)
+    bare.include_router(audit_router(connect, anonymous, table=AUDIT), prefix="/api/v2")
+    async with client(bare) as c:
+        r = await c.get("/api/v2/audit", params={"actor": "me"})
+        assert (r.status_code, r.json()["code"]) == (400, "invalid")
+        assert len((await c.get("/api/v2/audit", params={"actor": "vex"})).json()["items"]) == 1
+
+
+@pytest.mark.usefixtures("dsn")
 async def test_jobs_routes(make_runtime):
     registry = Registry()
     gate = asyncio.Event()

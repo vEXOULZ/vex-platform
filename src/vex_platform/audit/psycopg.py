@@ -39,10 +39,14 @@ async def read(
     scope: str | None = None,
     scopes: Sequence[str] | None = None,
     outcome: str | None = None,
+    own: tuple[str, str] | None = None,
+    actor: tuple[tuple[str, str] | None, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Newest first. ``action`` matches exactly or, ending in ``.``, every action under it (``vod.``).
     ``target`` ending in ``:`` matches every target of that type (``vod:``). ``scopes`` limits to some
-    channels (a caller who may only see their own)."""
+    channels (a caller who may only see their own); ``own``, an ``(actor_kind, actor_id)``, keeps that
+    actor's rows visible outside them. ``actor`` is ``(kind and id or None, login)``: rows by that actor,
+    or whose ``actor_login`` is the login (any case)."""
     clauses: list[str] = []
     params: list[Any] = []
 
@@ -69,7 +73,18 @@ async def read(
     if scope is not None:
         add("scope = %s", scope)
     if scopes is not None:
-        add("scope = ANY(%s)", list(scopes))
+        if own is None:
+            add("scope = ANY(%s)", list(scopes))
+        else:
+            clauses.append("(scope = ANY(%s) OR (actor_kind = %s AND actor_id = %s))")
+            params.extend([list(scopes), *own])
+    if actor is not None:
+        who, login = actor
+        if who is None:
+            add("lower(actor_login) = lower(%s)", login)
+        else:
+            clauses.append("((actor_kind = %s AND actor_id = %s) OR lower(actor_login) = lower(%s))")
+            params.extend([*who, login])
     if outcome is not None:
         add("outcome = %s", outcome)
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""

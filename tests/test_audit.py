@@ -87,6 +87,10 @@ async def test_read_filters():
         rows = await audit_pg.read(conn, table=AUDIT, limit=2)
         assert await actions(before_id=rows[-1]["id"]) == ["vod.hide", "vod.update"]
         assert await actions(action="v_d.") == []  # LIKE wildcards are escaped
+        assert await actions(scopes=["b"], own=("system", "x")) == ["vod.hide"]
+        assert await actions(scopes=[], own=("user", "1")) == ["vodka.drink", "vod.hide", "vod.update"]
+        assert await actions(actor=(None, "VEX")) == ["vodka.drink", "vod.hide", "vod.update"]  # any case
+        assert await actions(actor=(("system", "x"), "nobody")) == []
 
 
 @pytest.mark.parametrize("driver", ["psycopg", "asyncpg"])
