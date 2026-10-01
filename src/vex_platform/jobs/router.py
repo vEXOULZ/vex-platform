@@ -1,6 +1,7 @@
 """The standard job routes, mounted by each application under its ``/api/v2``.
 
     GET    /jobs                      ?state=&kind=&subject=&cursor=&limit=
+    GET    /jobs/counts               ?kind=&subject=&since= (runs per state)
     POST   /jobs                      queue a run
     GET    /jobs/{id}
     PATCH  /jobs/{id}                 pause_before, pause_next
@@ -74,6 +75,11 @@ class JobKindOut(ApiModel):
     pause_before: list[str]
     cancel_mode: str
     max_attempts: int | None
+
+
+class JobCountsOut(ApiModel):
+    counts: dict[str, int] = Field(description="Every state, 0 when none")
+    total: int
 
 
 class EnqueueIn(ApiModel):
@@ -153,6 +159,18 @@ def jobs_router(
         runs = await call(runtime.list, states=state, kind=kind, subject=subject,
                           before_id=int(key[0]) if key else None, limit=limit + 1)
         return page_of([out(r) for r in runs], limit, lambda r: [r.id])
+
+    # Before /jobs/{run_id}, which would take "counts" for an id.
+    @router.get("/jobs/counts", response_model=JobCountsOut)
+    async def job_counts(
+        kind: str | None = None,
+        subject: str | None = None,
+        since: Annotated[
+            UtcDatetime | None, Query(description="Count finished runs only from this time; active ones always")
+        ] = None,
+    ) -> JobCountsOut:
+        counts = await runtime.counts(kind=kind, subject=subject, since=since)
+        return JobCountsOut(counts=counts, total=sum(counts.values()))
 
     @router.post("/jobs", response_model=JobOut, status_code=status.HTTP_201_CREATED)
     async def enqueue(body: EnqueueIn, request: Request) -> JobOut:
