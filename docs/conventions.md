@@ -123,9 +123,9 @@ paused ◀──────┘
 async def download(ctx: StepContext) -> None:
     ctx.log.info("fetching %s", ctx.subject)
     ctx.payload["parts"] = 12
-    await ctx.save()                 # checkpoint payload mid-step
+    await ctx.save()  # checkpoint payload mid-step
     ctx.progress(3, 12, "parts")
-    if await ctx.should_stop():      # cooperative kinds must poll this
+    if await ctx.should_stop():  # cooperative kinds must poll this
         return
     await ctx.audit("vod.update", target="vod:1", before=..., after=...)
 ```

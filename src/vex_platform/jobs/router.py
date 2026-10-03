@@ -134,13 +134,26 @@ def jobs_router(
     def out(run: JobRun) -> JobOut:
         kind = registry.kinds.get(run.kind)
         return JobOut(
-            id=run.id, kind=run.kind, subject=run.subject, scope=run.scope, state=run.state, step=run.step,
-            steps=list(kind.steps) if kind else [], payload=run.payload, attempts=run.attempts,
-            last_error=run.last_error, not_before=run.not_before, pause_before=run.pause_before,
-            pause_next=run.pause_next, cancel_requested=run.cancel_requested,
-            actor=ActorOut(**run.actor.as_dict()), parent_id=run.parent_id, created_at=run.created_at,
+            id=run.id,
+            kind=run.kind,
+            subject=run.subject,
+            scope=run.scope,
+            state=run.state,
+            step=run.step,
+            steps=list(kind.steps) if kind else [],
+            payload=run.payload,
+            attempts=run.attempts,
+            last_error=run.last_error,
+            not_before=run.not_before,
+            pause_before=run.pause_before,
+            pause_next=run.pause_next,
+            cancel_requested=run.cancel_requested,
+            actor=ActorOut(**run.actor.as_dict()),
+            parent_id=run.parent_id,
+            created_at=run.created_at,
             updated_at=run.updated_at,
-            started_at=run.started_at, finished_at=run.finished_at,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
         )
 
     async def call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -166,8 +179,15 @@ def jobs_router(
         limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = 50,
     ) -> Page[Any]:
         key = decode_cursor(cursor, size=1)
-        runs = await call(runtime.list, states=state, kind=kind, subject=subject, parent_id=parent,
-                          before_id=int(key[0]) if key else None, limit=limit + 1)
+        runs = await call(
+            runtime.list,
+            states=state,
+            kind=kind,
+            subject=subject,
+            parent_id=parent,
+            before_id=int(key[0]) if key else None,
+            limit=limit + 1,
+        )
         return page_of([out(r) for r in runs], limit, lambda r: [r.id])
 
     # Before /jobs/{run_id}, which would take "counts" for an id.
@@ -186,8 +206,16 @@ def jobs_router(
     async def enqueue(body: EnqueueIn, request: Request) -> JobOut:
         if enqueue_kinds is not None and body.kind not in enqueue_kinds:
             raise ApiError(422, "invalid_job", f"{body.kind!r} cannot be queued through the API")
-        result = await call(runtime.enqueue, body.kind, body.subject, body.payload, step=body.step,
-                            pause_before=body.pause_before, paused=body.paused, **who(request))
+        result = await call(
+            runtime.enqueue,
+            body.kind,
+            body.subject,
+            body.payload,
+            step=body.step,
+            pause_before=body.pause_before,
+            paused=body.paused,
+            **who(request),
+        )
         return out(result.run)
 
     @router.get("/jobs/{run_id}", response_model=JobOut)
@@ -234,9 +262,7 @@ def jobs_router(
         return Page(items=items, next_cursor=encode_cursor([items[-1].id if items else after]))
 
     @router.get("/jobs/{run_id}/related", response_model=RelatedOut)
-    async def related_jobs(
-        run_id: int, limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = 200
-    ) -> RelatedOut:
+    async def related_jobs(run_id: int, limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = 200) -> RelatedOut:
         root, runs, truncated = await call(runtime.related, run_id, limit=limit)
         return RelatedOut(root_id=root, items=[out(r) for r in runs], truncated=truncated)
 

@@ -14,10 +14,31 @@ ACTIVE: tuple[str, ...] = ("queued", "running", "paused")
 FINISHED: tuple[str, ...] = ("succeeded", "failed", "cancelled")
 
 COLUMNS = (
-    "id", "kind", "subject", "state", "step", "payload", "attempts", "last_error", "not_before",
-    "pause_before", "pause_next", "cancel_requested", "queued_key", "active_key", "actor_kind",
-    "actor_id", "actor_login", "via", "procrastinate_job_id", "created_at", "updated_at", "started_at",
-    "finished_at", "scope", "parent_id",
+    "id",
+    "kind",
+    "subject",
+    "state",
+    "step",
+    "payload",
+    "attempts",
+    "last_error",
+    "not_before",
+    "pause_before",
+    "pause_next",
+    "cancel_requested",
+    "queued_key",
+    "active_key",
+    "actor_kind",
+    "actor_id",
+    "actor_login",
+    "via",
+    "procrastinate_job_id",
+    "created_at",
+    "updated_at",
+    "started_at",
+    "finished_at",
+    "scope",
+    "parent_id",
 )
 SELECT = ", ".join(COLUMNS)
 

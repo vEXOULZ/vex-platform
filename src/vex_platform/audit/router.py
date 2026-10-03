@@ -87,9 +87,19 @@ def audit_router(
             by = (await find_actor(request, actor) if find_actor else None, actor)
         async with connect() as conn:
             rows = await audit_pg.read(
-                conn, table=table, limit=limit + 1, before_id=int(key[0]) if key else None,
-                actor_kind=actor_kind, actor_id=actor_id, action=action, target=target,
-                scope=scope, scopes=scopes, outcome=outcome, own=me, actor=by,
+                conn,
+                table=table,
+                limit=limit + 1,
+                before_id=int(key[0]) if key else None,
+                actor_kind=actor_kind,
+                actor_id=actor_id,
+                action=action,
+                target=target,
+                scope=scope,
+                scopes=scopes,
+                outcome=outcome,
+                own=me,
+                actor=by,
             )
         if labels is not None:
             await labels(request, rows)

@@ -17,6 +17,7 @@ states and the rules.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import datetime as dt
 import traceback
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
@@ -220,6 +221,7 @@ class JobRuntime:
         async with conn.transaction():
             cur = await conn.execute("SELECT current_setting('search_path')")
             row = await cur.fetchone()
+            assert row is not None  # current_setting() always returns a row
             previous = row[0] if not isinstance(row, dict) else row["current_setting"]
             await conn.execute("SELECT set_config('search_path', %s, true)", (f"{self.schema}, {previous}",))
             yield conn
@@ -272,15 +274,34 @@ class JobRuntime:
             )
 
     async def _audit(
-        self, conn: AsyncConnection[Any], action: str, run: JobRun, actor: Actor, request_id: str | None,
-        scope: str | None = None, before: Any = None, after: Any = None, detail: Any = None,
+        self,
+        conn: AsyncConnection[Any],
+        action: str,
+        run: JobRun,
+        actor: Actor,
+        request_id: str | None,
+        scope: str | None = None,
+        before: Any = None,
+        after: Any = None,
+        detail: Any = None,
     ) -> None:
         if self.audit_table is None:
             return
-        await audit_pg.record(conn, AuditEntry(
-            action, actor=actor, target=f"job:{run.id}", scope=run.scope if scope is None else scope,
-            before=before, after=after, detail=detail, request_id=request_id, job_run_id=run.id,
-        ), table=self.audit_table)
+        await audit_pg.record(
+            conn,
+            AuditEntry(
+                action,
+                actor=actor,
+                target=f"job:{run.id}",
+                scope=run.scope if scope is None else scope,
+                before=before,
+                after=after,
+                detail=detail,
+                request_id=request_id,
+                job_run_id=run.id,
+            ),
+            table=self.audit_table,
+        )
 
     def _hook(self, event: str, run: JobRun) -> None:
         for hook in self.hooks:
@@ -308,9 +329,10 @@ class JobRuntime:
         before_id: int | None = None,
         limit: int = 50,
         conn: AsyncConnection[Any] | None = None,
-    ) -> list[JobRun]:
+    ) -> builtins.list[JobRun]:
         """Newest first; with ``parent_id``, only the runs that run queued."""
-        clauses, params = ["TRUE"], []
+        clauses: builtins.list[str] = ["TRUE"]
+        params: builtins.list[Any] = []
         if states:
             unknown = set(states) - set(STATES)
             if unknown:
@@ -347,7 +369,8 @@ class JobRuntime:
     ) -> dict[str, int]:
         """How many runs are in each state (every state, 0 when none). With ``since``, finished runs
         count only when they finished at or after it; active runs always count."""
-        clauses, params = ["TRUE"], []
+        clauses: builtins.list[str] = ["TRUE"]
+        params: builtins.list[Any] = []
         if kind is not None:
             clauses.append("kind = %s")
             params.append(kind)
@@ -366,7 +389,7 @@ class JobRuntime:
 
     async def related(
         self, run_id: int, *, limit: int = 200, conn: AsyncConnection[Any] | None = None
-    ) -> tuple[int, list[JobRun], bool]:
+    ) -> tuple[int, builtins.list[JobRun], bool]:
         """The tree ``run_id`` is in: its root (the furthest ancestor) and every run under it, oldest first,
         at most ``limit``. Returns (root id, runs, whether some were left out). A run that nothing queued
         and that queued nothing comes back alone."""
@@ -402,10 +425,11 @@ class JobRuntime:
         payload_contains: dict[str, Any] | None = None,
         states: Sequence[str] = ACTIVE,
         conn: AsyncConnection[Any] | None = None,
-    ) -> list[JobRun]:
+    ) -> builtins.list[JobRun]:
         """Runs of ``kind`` (newest first) on ``subject`` and/or whose payload contains the given keys:
         "is one already queued for this stream?"."""
-        clauses, params = ["kind = %s", "state = ANY(%s)"], [kind, list(states)]
+        clauses: builtins.list[str] = ["kind = %s", "state = ANY(%s)"]
+        params: builtins.list[Any] = [kind, list(states)]
         if subject is not None:
             clauses.append("subject = %s")
             params.append(subject)
@@ -468,29 +492,42 @@ class JobRuntime:
                 if existing is None:
                     try:
                         async with c.transaction():
-                            run = await self._insert(c, kind, subject, payload, state, first, pause_before,
-                                                     not_before, queued_key, active_key, actor, scope,
-                                                     parent_id)
+                            run = await self._insert(
+                                c,
+                                kind,
+                                subject,
+                                payload,
+                                state,
+                                first,
+                                pause_before,
+                                not_before,
+                                queued_key,
+                                active_key,
+                                actor,
+                                scope,
+                                parent_id,
+                            )
                     except errors.UniqueViolation:
                         continue  # a concurrent enqueue won: go and find its run
                     if state == "queued":
                         run = await self._defer(c, run)
-                    after = {"kind": kind, "subject": subject, "step": first, "state": state}
+                    after: dict[str, Any] = {"kind": kind, "subject": subject, "step": first, "state": state}
                     if parent_id is not None:
                         after["parent_id"] = parent_id
                     await self._audit(c, "job.enqueue", run, actor, request_id, scope, after=after)
                     created = True
                 else:
-                    run, created = await self._on_duplicate(c, existing, payload, on_duplicate, merge,
-                                                            actor, request_id, scope)
+                    run, created = await self._on_duplicate(
+                        c, existing, payload, on_duplicate, merge, actor, request_id, scope
+                    )
             if created:
-                log.info("jobs.enqueued", run_id=run.id, kind=kind, subject=subject, state=state,
-                         actor=actor.label())
+                log.info("jobs.enqueued", run_id=run.id, kind=kind, subject=subject, state=state, actor=actor.label())
             return Enqueued(run, created)
         raise JobConflict(f"could not enqueue {kind!r}: its dedupe keys keep conflicting")
 
-    async def _duplicate(self, conn: AsyncConnection[Any], kind: str, queued_key: str | None,
-                         active_key: str | None) -> JobRun | None:
+    async def _duplicate(
+        self, conn: AsyncConnection[Any], kind: str, queued_key: str | None, active_key: str | None
+    ) -> JobRun | None:
         if queued_key is None and active_key is None:
             return None
         row = await self._one(
@@ -503,24 +540,59 @@ class JobRuntime:
         )
         return JobRun.from_row(row) if row else None
 
-    async def _insert(self, conn: AsyncConnection[Any], kind: str, subject: str | None, payload: dict[str, Any],
-                      state: str, step: str, pause_before: Sequence[str] | None, not_before: dt.datetime | None,
-                      queued_key: str | None, active_key: str | None, actor: Actor, scope: str | None,
-                      parent_id: int | None = None) -> JobRun:
+    async def _insert(
+        self,
+        conn: AsyncConnection[Any],
+        kind: str,
+        subject: str | None,
+        payload: dict[str, Any],
+        state: str,
+        step: str,
+        pause_before: Sequence[str] | None,
+        not_before: dt.datetime | None,
+        queued_key: str | None,
+        active_key: str | None,
+        actor: Actor,
+        scope: str | None,
+        parent_id: int | None = None,
+    ) -> JobRun:
         row = await self._one(
             conn,
             "INSERT INTO job_runs (kind, subject, payload, state, step, pause_before, not_before, queued_key,"
             " active_key, actor_kind, actor_id, actor_login, via, scope, parent_id) VALUES (%s, %s, %s, %s, %s,"
             f" %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {SELECT}",
-            (kind, subject, Jsonb(payload), state, step, list(pause_before) if pause_before is not None else None,
-             not_before, queued_key, active_key, actor.kind, actor.id, actor.login, actor.via, scope, parent_id),
+            (
+                kind,
+                subject,
+                Jsonb(payload),
+                state,
+                step,
+                list(pause_before) if pause_before is not None else None,
+                not_before,
+                queued_key,
+                active_key,
+                actor.kind,
+                actor.id,
+                actor.login,
+                actor.via,
+                scope,
+                parent_id,
+            ),
         )
         assert row is not None
         return JobRun.from_row(row)
 
-    async def _on_duplicate(self, conn: AsyncConnection[Any], existing: JobRun, payload: dict[str, Any],
-                            on_duplicate: OnDuplicate, merge: Callable[..., dict[str, Any]] | None,
-                            actor: Actor, request_id: str | None, scope: str | None) -> tuple[JobRun, bool]:
+    async def _on_duplicate(
+        self,
+        conn: AsyncConnection[Any],
+        existing: JobRun,
+        payload: dict[str, Any],
+        on_duplicate: OnDuplicate,
+        merge: Callable[..., dict[str, Any]] | None,
+        actor: Actor,
+        request_id: str | None,
+        scope: str | None,
+    ) -> tuple[JobRun, bool]:
         if on_duplicate == "raise":
             raise JobConflict(f"run {existing.id} of {existing.kind!r} is already {existing.state}")
         if on_duplicate == "merge" and existing.state == "queued":
@@ -529,13 +601,20 @@ class JobRuntime:
             merged = merge(dict(existing.payload), payload)
             if merged != existing.payload:
                 run = await self._update(conn, existing.id, payload=merged)
-                await self._audit(conn, "job.merge", run, actor, request_id, scope,
-                                  before=existing.payload, after=merged)
+                await self._audit(
+                    conn, "job.merge", run, actor, request_id, scope, before=existing.payload, after=merged
+                )
                 return run, False
         return existing, False
 
-    async def pause(self, run_id: int, *, actor: Actor = SYSTEM, request_id: str | None = None,
-                    conn: AsyncConnection[Any] | None = None) -> JobRun:
+    async def pause(
+        self,
+        run_id: int,
+        *,
+        actor: Actor = SYSTEM,
+        request_id: str | None = None,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> JobRun:
         """A queued run pauses now; a running one at its next step boundary (it stays ``running``
         with ``pause_next`` until then). Pausing a paused run changes nothing."""
         async with self.transaction(conn) as c:
@@ -549,12 +628,26 @@ class JobRuntime:
                 new = await self._update(c, run_id, pause_next=True)
             else:
                 raise JobConflict(f"run {run_id} is {run.state}; only queued or running runs can be paused")
-            await self._audit(c, "job.pause", new, actor, request_id, before={"state": run.state},
-                              after={"state": new.state, "pause_next": new.pause_next})
+            await self._audit(
+                c,
+                "job.pause",
+                new,
+                actor,
+                request_id,
+                before={"state": run.state},
+                after={"state": new.state, "pause_next": new.pause_next},
+            )
         return new
 
-    async def resume(self, run_id: int, *, once: bool = False, actor: Actor = SYSTEM,
-                     request_id: str | None = None, conn: AsyncConnection[Any] | None = None) -> JobRun:
+    async def resume(
+        self,
+        run_id: int,
+        *,
+        once: bool = False,
+        actor: Actor = SYSTEM,
+        request_id: str | None = None,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> JobRun:
         """Queue a paused run at its step; ``once`` pauses it again after that step (single-stepping)."""
         async with self.transaction(conn) as c:
             run = await self._lock_run(c, run_id)
@@ -562,12 +655,26 @@ class JobRuntime:
                 raise JobConflict(f"run {run_id} is {run.state}; only paused runs can be resumed")
             new = await self._update(c, run_id, state="queued", pause_next=once)
             new = await self._defer(c, new)
-            await self._audit(c, "job.resume", new, actor, request_id, before={"state": "paused"},
-                              after={"state": "queued", "once": once})
+            await self._audit(
+                c,
+                "job.resume",
+                new,
+                actor,
+                request_id,
+                before={"state": "paused"},
+                after={"state": "queued", "once": once},
+            )
         return new
 
-    async def retry(self, run_id: int, *, step: str | None = None, actor: Actor = SYSTEM,
-                    request_id: str | None = None, conn: AsyncConnection[Any] | None = None) -> JobRun:
+    async def retry(
+        self,
+        run_id: int,
+        *,
+        step: str | None = None,
+        actor: Actor = SYSTEM,
+        request_id: str | None = None,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> JobRun:
         """Queue a failed or cancelled run again, at ``step`` or where it stopped, with fresh attempts."""
         async with self.transaction(conn) as c:
             run = await self._lock_run(c, run_id)
@@ -579,19 +686,40 @@ class JobRuntime:
             try:
                 async with c.transaction():
                     new = await self._update(
-                        c, run_id, state="queued", step=step or run.step or kind.steps[0], attempts=0,
-                        last_error=None, not_before=None, cancel_requested=False, pause_next=False,
+                        c,
+                        run_id,
+                        state="queued",
+                        step=step or run.step or kind.steps[0],
+                        attempts=0,
+                        last_error=None,
+                        not_before=None,
+                        cancel_requested=False,
+                        pause_next=False,
                         finished_at=None,
                     )
             except errors.UniqueViolation:
                 raise JobConflict(f"another run of {run.kind!r} with the same key is already active") from None
             new = await self._defer(c, new)
-            await self._audit(c, "job.retry", new, actor, request_id, before={"state": run.state},
-                              after={"state": "queued", "step": new.step})
+            await self._audit(
+                c,
+                "job.retry",
+                new,
+                actor,
+                request_id,
+                before={"state": run.state},
+                after={"state": "queued", "step": new.step},
+            )
         return new
 
-    async def cancel(self, run_id: int, *, actor: Actor = SYSTEM, request_id: str | None = None,
-                     wait: float = 5.0, conn: AsyncConnection[Any] | None = None) -> JobRun:
+    async def cancel(
+        self,
+        run_id: int,
+        *,
+        actor: Actor = SYSTEM,
+        request_id: str | None = None,
+        wait: float = 5.0,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> JobRun:
         """End a queued or paused run now. A running run is asked to stop: "interrupt" kinds are
         cancelled mid-step, "cooperative" ones stop at their next ``should_stop()`` check. Waits up
         to ``wait`` seconds for it to reach ``cancelled`` and returns the run as it is then."""
@@ -599,14 +727,13 @@ class JobRuntime:
             run = await self._lock_run(c, run_id)
             if run.state in ("queued", "paused"):
                 await self._drop_job(c, run)
-                new = await self._update(c, run_id, state="cancelled", cancel_requested=True,
-                                         finished_at=_now(), procrastinate_job_id=None)
+                new = await self._update(
+                    c, run_id, state="cancelled", cancel_requested=True, finished_at=_now(), procrastinate_job_id=None
+                )
             elif run.state == "running":
                 new = await self._update(c, run_id, cancel_requested=True)
             else:
-                raise JobConflict(
-                    f"run {run_id} is {run.state}; only queued, paused or running runs can be cancelled"
-                )
+                raise JobConflict(f"run {run_id} is {run.state}; only queued, paused or running runs can be cancelled")
             await self._audit(c, "job.cancel", new, actor, request_id, before={"state": run.state})
         if new.state != "running":
             self._hook("cancelled", new)
@@ -622,9 +749,16 @@ class JobRuntime:
             new = await self.get(run_id)
         return new
 
-    async def update(self, run_id: int, *, pause_before: Sequence[str] | None | Literal["default"] = "default",
-                     pause_next: bool | None = None, actor: Actor = SYSTEM, request_id: str | None = None,
-                     conn: AsyncConnection[Any] | None = None) -> JobRun:
+    async def update(
+        self,
+        run_id: int,
+        *,
+        pause_before: Sequence[str] | None | Literal["default"] = "default",
+        pause_next: bool | None = None,
+        actor: Actor = SYSTEM,
+        request_id: str | None = None,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> JobRun:
         """Change an active run's gates: ``pause_before`` (None: back to the kind's default) and/or
         ``pause_next``. They apply the next time the run moves on to a step."""
         values: dict[str, Any] = {}
@@ -642,8 +776,9 @@ class JobRuntime:
             if not values:
                 return run
             new = await self._update(c, run_id, **values)
-            await self._audit(c, "job.update", new, actor, request_id,
-                              before={k: getattr(run, k) for k in values}, after=values)
+            await self._audit(
+                c, "job.update", new, actor, request_id, before={k: getattr(run, k) for k in values}, after=values
+            )
         return new
 
     # ---- recovery ------------------------------------------------------------------------------
@@ -669,7 +804,7 @@ class JobRuntime:
                 if run.state == "running":
                     if status == "doing" and run.procrastinate_job_id not in stalled:
                         continue  # another live worker has it
-                    if status == "doing":
+                    if status == "doing" and run.procrastinate_job_id is not None:
                         await self.app.job_manager.finish_job_by_id_async(
                             run.procrastinate_job_id, Status.FAILED, delete_job=True
                         )
@@ -734,8 +869,9 @@ class JobRuntime:
             run = JobRun.from_row(row)
             if kind is None:
                 async with self.transaction() as c:
-                    run = await self._update(c, run_id, state="failed", finished_at=_now(),
-                                             last_error=f"unknown job kind {run.kind!r}")
+                    run = await self._update(
+                        c, run_id, state="failed", finished_at=_now(), last_error=f"unknown job kind {run.kind!r}"
+                    )
                 self._hook("failed", run)
                 return
             self._tasks[run_id] = asyncio.current_task()  # type: ignore[assignment]
@@ -775,8 +911,16 @@ class JobRuntime:
                     return
             async with self.transaction() as c:
                 done = await self._update(
-                    c, run.id, state="succeeded", step=None, payload=ctx.payload, subject=ctx.subject,
-                    last_error=None, not_before=None, pause_next=False, finished_at=_now(),
+                    c,
+                    run.id,
+                    state="succeeded",
+                    step=None,
+                    payload=ctx.payload,
+                    subject=ctx.subject,
+                    last_error=None,
+                    not_before=None,
+                    pause_next=False,
+                    finished_at=_now(),
                 )
             ctx.step = None
             ctx.log.info("%s finished", kind.name)
@@ -799,8 +943,7 @@ class JobRuntime:
             kind = self.registry.kinds.get(run.kind, ctx.kind)
             gates = kind.pause_before if run.pause_before is None else run.pause_before
             if run.pause_next or step in gates:
-                ctx.run = await self._update(c, ctx.run_id, state="paused", pause_next=False,
-                                             procrastinate_job_id=None)
+                ctx.run = await self._update(c, ctx.run_id, state="paused", pause_next=False, procrastinate_job_id=None)
                 return "pause"
         return "go"
 
@@ -811,13 +954,21 @@ class JobRuntime:
             async with self.transaction() as c:
                 run = await self._lock_run(c, ctx.run_id)
                 if run.cancel_requested:
-                    run = await self._update(c, run.id, state="cancelled", step=current, payload=ctx.payload,
-                                             subject=ctx.subject, finished_at=_now())
+                    run = await self._update(
+                        c,
+                        run.id,
+                        state="cancelled",
+                        step=current,
+                        payload=ctx.payload,
+                        subject=ctx.subject,
+                        finished_at=_now(),
+                    )
                     ctx.log.info("cancelled")
                     event = "cancelled"
                 else:
-                    run = await self._update(c, run.id, state="queued", step=current, payload=ctx.payload,
-                                             subject=ctx.subject)
+                    run = await self._update(
+                        c, run.id, state="queued", step=current, payload=ctx.payload, subject=ctx.subject
+                    )
                     run = await self._defer(c, run)
                     ctx.log.info("interrupted by shutdown; will resume at step %s", current)
                     event = "requeued"
@@ -832,8 +983,13 @@ class JobRuntime:
         async with self.transaction() as c:
             run = await self._lock_run(c, ctx.run_id)
             attempts = run.attempts + 1
-            common = {"step": current, "attempts": attempts, "last_error": err, "payload": ctx.payload,
-                      "subject": ctx.subject}
+            common = {
+                "step": current,
+                "attempts": attempts,
+                "last_error": err,
+                "payload": ctx.payload,
+                "subject": ctx.subject,
+            }
             if run.cancel_requested:
                 run = await self._update(c, run.id, state="cancelled", finished_at=_now(), **common)
                 event = "cancelled"
@@ -843,8 +999,9 @@ class JobRuntime:
                 event = "failed"
             else:
                 delay = kind.retry_delay(attempts)
-                run = await self._update(c, run.id, state="queued",
-                                         not_before=_now() + dt.timedelta(seconds=delay), **common)
+                run = await self._update(
+                    c, run.id, state="queued", not_before=_now() + dt.timedelta(seconds=delay), **common
+                )
                 run = await self._defer(c, run)
                 ctx.log.warning("step %s failed (%s); retry %d in %gs", current, exc, attempts, delay)
                 event = "retrying"

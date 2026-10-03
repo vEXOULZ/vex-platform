@@ -8,8 +8,20 @@ from typing import Any
 from .model import AuditEntry
 
 COLUMNS = (
-    "at", "actor_kind", "actor_id", "actor_login", "via", "action", "target", "scope", "outcome",
-    "before", "after", "detail", "request_id", "job_run_id",
+    "at",
+    "actor_kind",
+    "actor_id",
+    "actor_login",
+    "via",
+    "action",
+    "target",
+    "scope",
+    "outcome",
+    "before",
+    "after",
+    "detail",
+    "request_id",
+    "job_run_id",
 )
 SELECT_COLUMNS = ("id", *COLUMNS)
 
@@ -40,7 +52,10 @@ def values(entry: AuditEntry) -> dict[str, Any]:
 
 def insert_sql(table: str, style: str) -> str:
     """``style`` "pyformat" (psycopg: ``%(name)s``) or "named" (SQLAlchemy text: ``:name``)."""
-    mark = (lambda c: f"%({c})s") if style == "pyformat" else (lambda c: f":{c}")
+
+    def mark(c: str) -> str:
+        return f"%({c})s" if style == "pyformat" else f":{c}"
+
     placeholders = []
     for col in COLUMNS:
         p = mark(col)

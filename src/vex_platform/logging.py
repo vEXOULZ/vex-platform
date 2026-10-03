@@ -46,15 +46,17 @@ def configure_logging(level: str = "INFO", fmt: Literal["json", "console"] = "co
     )
     handler = logging.StreamHandler(sys.stdout)
     handler.addFilter(RedactQueryFilter())
-    handler.setFormatter(structlog.stdlib.ProcessorFormatter(
-        foreign_pre_chain=[*shared, structlog.stdlib.ExtraAdder()],
-        processors=[
-            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            renderer,
-        ],
-    ))
+    handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            foreign_pre_chain=[*shared, structlog.stdlib.ExtraAdder()],
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.processors.StackInfoRenderer(),
+                structlog.processors.format_exc_info,
+                renderer,
+            ],
+        )
+    )
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level)

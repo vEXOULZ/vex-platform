@@ -57,14 +57,16 @@ class RunEvents:
         at: dt.datetime | None = None,
     ) -> None:
         # deque.append is atomic, so a thread may call this.
-        self._pending.append({
-            "run_id": run_id,
-            "at": at or dt.datetime.now(dt.UTC),
-            "level": level if level in LEVELS else "info",
-            "step": step,
-            "message": message,
-            "progress": Jsonb(progress) if progress is not None else None,
-        })
+        self._pending.append(
+            {
+                "run_id": run_id,
+                "at": at or dt.datetime.now(dt.UTC),
+                "level": level if level in LEVELS else "info",
+                "step": step,
+                "message": message,
+                "progress": Jsonb(progress) if progress is not None else None,
+            }
+        )
 
     async def flush(self) -> None:
         async with self._lock:

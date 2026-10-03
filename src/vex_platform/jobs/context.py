@@ -28,8 +28,9 @@ class RunLog:
     def __init__(self, ctx: StepContext) -> None:
         self._ctx = ctx
 
-    def _emit(self, level: Level, msg: str, args: tuple[Any, ...], progress: dict[str, Any] | None = None,
-              **fields: Any) -> None:
+    def _emit(
+        self, level: Level, msg: str, args: tuple[Any, ...], progress: dict[str, Any] | None = None, **fields: Any
+    ) -> None:
         text = msg % args if args else msg
         ctx = self._ctx
         ctx.runtime.events.add(ctx.run_id, level, ctx.step, text, progress)
@@ -67,8 +68,9 @@ class StepContext:
         self._cancel_seen = False
         self._polled_at = 0.0
 
-    def progress(self, done: float, total: float | None = None, unit: str = "items",
-                 message: str | None = None) -> None:
+    def progress(
+        self, done: float, total: float | None = None, unit: str = "items", message: str | None = None
+    ) -> None:
         """Report progress within the current step; the API shows the latest report per step.
         Safe to call from a thread."""
         report = progress(done, total, unit)
@@ -96,8 +98,9 @@ class StepContext:
         if await self.should_stop():
             raise RunStopped()
 
-    async def enqueue(self, kind: str, subject: str | None = None, payload: dict[str, Any] | None = None,
-                      **options: Any) -> Enqueued:
+    async def enqueue(
+        self, kind: str, subject: str | None = None, payload: dict[str, Any] | None = None, **options: Any
+    ) -> Enqueued:
         """Queue a child run: its actor is this run (``job:<id>``, via ``job``) and its parent this run, so
         GET /jobs/{id}/related shows the tree; ``scope`` defaults to this run's. Other options as
         ``JobRuntime.enqueue``."""
@@ -110,6 +113,4 @@ class StepContext:
         ``job_run_id`` set and, unless given, the run's ``scope``. Needs the runtime's ``audit_table``; None
         without it."""
         fields.setdefault("scope", self.run.scope)
-        return await self.runtime._audit_step(
-            AuditEntry(action, actor=self.actor, job_run_id=self.run_id, **fields)
-        )
+        return await self.runtime._audit_step(AuditEntry(action, actor=self.actor, job_run_id=self.run_id, **fields))

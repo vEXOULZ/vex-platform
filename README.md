@@ -19,7 +19,7 @@ and doomtp-bot, and the conventions both follow ([docs/conventions.md](docs/conv
 dependencies = ["vex-platform @ git+https://github.com/vEXOULZ/vex-platform@v0.1.0"]
 ```
 
-Python 3.12+, Postgres 13+.
+Python 3.13+, Postgres 13+.
 
 ## Use
 
@@ -28,13 +28,16 @@ from vex_platform.jobs import JobRuntime, Registry
 
 registry = Registry()
 
+
 @registry.step("fetch")
 async def fetch(ctx):
     ctx.log.info("fetching %s", ctx.subject)
     ctx.progress(1, 2, "parts")
 
+
 @registry.step("upload")
 async def upload(ctx): ...
+
 
 registry.kind("archive", ["fetch", "upload"], lock=lambda run: run.subject)
 
@@ -48,6 +51,7 @@ Migrations, in an Alembic revision of the application:
 
 ```python
 from vex_platform import migrations
+
 
 def upgrade():
     migrations.apply(op, migrations.jobs_sql(1, schema="jobs"))
