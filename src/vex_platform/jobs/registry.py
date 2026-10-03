@@ -51,7 +51,7 @@ class JobKind:
 
     def retry_delay(self, attempts: int) -> float:
         """Seconds before retry number ``attempts`` (1-based): base, 2x, 4x, ..."""
-        return self.retry_base_seconds * 2 ** max(attempts - 1, 0)
+        return self.retry_base_seconds * 2.0 ** max(attempts - 1, 0)
 
 
 @dataclass
@@ -68,6 +68,7 @@ class Registry:
     def step(self, name: str | None = None) -> Callable[[Step], Step]:
         def register(fn: Step) -> Step:
             return self.add_step(name or fn.__name__, fn)
+
         return register
 
     def kind(self, name: str, steps: Sequence[str], **options: Any) -> JobKind:

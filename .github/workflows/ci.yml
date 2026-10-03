@@ -1,0 +1,15 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  conventions:
+    uses: vEXOULZ/conventions/.github/workflows/conventions-check.yml@v1.0.0
+    secrets: inherit
+  ci:
+    uses: vEXOULZ/conventions/.github/workflows/python-ci.yml@v1.0.0
+    with:
+      postgres: true

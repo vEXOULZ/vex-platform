@@ -16,7 +16,12 @@ if sys.platform == "win32":
     # psycopg's async connections need a selector loop on Windows.
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-DSN = os.environ.get("VEX_TEST_DSN", "postgresql://vex:vex@127.0.0.1:55434/vex_platform_test")
+# VEX_TEST_DSN wins; CI's shared Postgres service sets TEST_DATABASE_URL; the default is compose.yaml's.
+DSN = (
+    os.environ.get("VEX_TEST_DSN")
+    or os.environ.get("TEST_DATABASE_URL")
+    or "postgresql://vex:vex@127.0.0.1:55434/vex_platform_test"
+)
 AUDIT = "public.audit_log"
 
 
@@ -68,9 +73,7 @@ async def make_runtime(dsn: str) -> AsyncIterator[MakeRuntime]:
         await runtime.close()
 
 
-async def wait_for(
-    runtime: JobRuntime, run_id: int, states: Iterable[str], timeout: float = 15.0
-) -> JobRun:
+async def wait_for(runtime: JobRuntime, run_id: int, states: Iterable[str], timeout: float = 15.0) -> JobRun:
     states = tuple(states)
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
@@ -93,7 +96,5 @@ async def until(check: Callable[[], bool], timeout: float = 10.0) -> None:
 async def audit_rows(action_prefix: str = "") -> list[dict[str, Any]]:
     async with await psycopg.AsyncConnection.connect(DSN) as conn:
         cur = conn.cursor(row_factory=psycopg.rows.dict_row)
-        await cur.execute(
-            "SELECT * FROM public.audit_log WHERE action LIKE %s ORDER BY id", (action_prefix + "%",)
-        )
+        await cur.execute("SELECT * FROM public.audit_log WHERE action LIKE %s ORDER BY id", (action_prefix + "%",))
         return list(await cur.fetchall())

@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .middleware import request_id
@@ -22,17 +22,32 @@ PROBLEM_JSON = "application/problem+json"
 
 # Default ``code`` per status, for errors raised without one (HTTPException, framework 404s).
 _CODES = {
-    400: "bad_request", 401: "unauthenticated", 403: "forbidden", 404: "not_found",
-    405: "method_not_allowed", 409: "conflict", 413: "too_large", 422: "invalid", 429: "rate_limited",
-    500: "internal", 503: "unavailable",
+    400: "bad_request",
+    401: "unauthenticated",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    413: "too_large",
+    422: "invalid",
+    429: "rate_limited",
+    500: "internal",
+    503: "unavailable",
 }
 
 
 class ApiError(Exception):
     """``code`` is a stable snake_case identifier clients may branch on; ``detail`` is for people."""
 
-    def __init__(self, status: int, code: str | None = None, detail: str | None = None, *,
-                 headers: dict[str, str] | None = None, **extra: Any) -> None:
+    def __init__(
+        self,
+        status: int,
+        code: str | None = None,
+        detail: str | None = None,
+        *,
+        headers: dict[str, str] | None = None,
+        **extra: Any,
+    ) -> None:
         self.status = status
         self.code = code or _CODES.get(status, "error")
         self.detail = detail
@@ -48,9 +63,15 @@ def _title(status: int) -> str:
         return "Error"
 
 
-def problem(status: int, code: str | None = None, detail: str | None = None, *,
-            request: Request | None = None, headers: dict[str, str] | None = None,
-            **extra: Any) -> JSONResponse:
+def problem(
+    status: int,
+    code: str | None = None,
+    detail: str | None = None,
+    *,
+    request: Request | None = None,
+    headers: dict[str, str] | None = None,
+    **extra: Any,
+) -> JSONResponse:
     body: dict[str, Any] = {
         "type": "about:blank",
         "title": _title(status),
@@ -84,18 +105,17 @@ def install_error_handlers(app: FastAPI, prefix: str = "/api/v2") -> None:
         return problem(exc.status, exc.code, exc.detail, request=request, headers=exc.headers, **exc.extra)
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http(request: Request, exc: StarletteHTTPException):
+    async def _http(request: Request, exc: StarletteHTTPException) -> Response:
         if not under(prefix, request.url.path):
             return await http_exception_handler(request, exc)
         detail = exc.detail if isinstance(exc.detail, str) else None
         return problem(exc.status_code, None, detail, request=request, headers=getattr(exc, "headers", None))
 
     @app.exception_handler(RequestValidationError)
-    async def _invalid(request: Request, exc: RequestValidationError):
+    async def _invalid(request: Request, exc: RequestValidationError) -> Response:
         if not under(prefix, request.url.path):
             return await request_validation_exception_handler(request, exc)
         errors = [
-            {"loc": list(e.get("loc", ())), "msg": e.get("msg", ""), "type": e.get("type", "")}
-            for e in exc.errors()
+            {"loc": list(e.get("loc", ())), "msg": e.get("msg", ""), "type": e.get("type", "")} for e in exc.errors()
         ]
         return problem(422, "invalid", "The request did not validate.", request=request, errors=errors)

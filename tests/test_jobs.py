@@ -7,7 +7,6 @@ from typing import Any
 
 import psycopg
 import pytest
-from conftest import DSN, audit_rows, wait_for
 
 from vex_platform.actor import Actor
 from vex_platform.jobs import (
@@ -21,6 +20,8 @@ from vex_platform.jobs import (
 )
 from vex_platform.jobs.runtime import kinds_info
 
+from .conftest import DSN, audit_rows, wait_for
+
 pytestmark = pytest.mark.usefixtures("dsn")
 
 VEX = Actor("user", "1", "vex", "api")
@@ -29,10 +30,12 @@ VEX = Actor("user", "1", "vex", "api")
 def three_steps(calls: list[str], **kind_options: Any) -> Registry:
     registry = Registry()
     for name in ("a", "b", "c"):
+
         async def step(ctx: StepContext, name: str = name) -> None:
             calls.append(name)
             ctx.payload[name] = True
             ctx.log.info("did %s", name)
+
         registry.add_step(name, step)
     registry.kind("abc", ["a", "b", "c"], retry_base_seconds=0, **kind_options)
     return registry
@@ -90,6 +93,7 @@ async def test_kind_gates_change_while_a_run_goes(make_runtime):
     async def slow_a(ctx: StepContext) -> None:
         calls.append("a")
         await gate.wait()
+
     registry.steps["a"] = slow_a
     runtime = await make_runtime(registry)
     run = (await runtime.enqueue("abc")).run
@@ -161,7 +165,7 @@ async def test_failed_step_retries_then_fails(make_runtime):
 
     bad = (await runtime.enqueue("broken")).run
     bad = await wait_for(runtime, bad.id, ["failed"])
-    assert bad.attempts == 3 and "RuntimeError: boom" in bad.last_error
+    assert bad.attempts == 3 and "RuntimeError: boom" in (bad.last_error or "")
     assert [t for t in tries if t < 0] == [-1, -2, -3]
 
     again = await runtime.retry(bad.id)
@@ -272,7 +276,10 @@ async def test_dedupe_keys(make_runtime):
     assert first.created and not same.created and same.run.id == first.run.id
 
     merged = await runtime.enqueue(
-        "abc", payload={"gaps": [2]}, queued_key="chan:1", on_duplicate="merge",
+        "abc",
+        payload={"gaps": [2]},
+        queued_key="chan:1",
+        on_duplicate="merge",
         merge=lambda old, new: {"gaps": sorted(set(old["gaps"]) | set(new["gaps"]))},
     )
     assert merged.run.payload == {"gaps": [1, 2]}
@@ -384,13 +391,13 @@ async def test_enqueue_joins_the_callers_transaction(make_runtime):
         await conn.execute("SET search_path TO public")
         run = (await runtime.enqueue("abc", conn=conn)).run
         cur = await conn.execute("SHOW search_path")
-        assert (await cur.fetchone())[0] == "public"  # put back after the block
+        assert await cur.fetchone() == ("public",)  # put back after the block
         await conn.rollback()
     with pytest.raises(Exception, match="no job run"):
         await runtime.get(run.id)
     async with await psycopg.AsyncConnection.connect(DSN) as conn:
         cur = await conn.execute("SELECT count(*) FROM jobs.procrastinate_jobs")
-        assert (await cur.fetchone())[0] == 0
+        assert await cur.fetchone() == (0,)
     assert await audit_rows() == []
 
 
@@ -425,8 +432,11 @@ async def test_step_context_extras(make_runtime):
         await ctx.audit("vod.archive", target="vod:77")
 
     registry.kind("ctx", ["work"])
-    runtime = await make_runtime(registry, context_factory=AppContext, actor=None) if False else \
-        await make_runtime(registry, context_factory=AppContext)
+    runtime = (
+        await make_runtime(registry, context_factory=AppContext, actor=None)
+        if False
+        else await make_runtime(registry, context_factory=AppContext)
+    )
     run = (await runtime.enqueue("ctx", actor=VEX, scope="456")).run
     run = await wait_for(runtime, run.id, ["succeeded"])
     assert run.subject == "vod:77" and run.scope == "456"
@@ -446,7 +456,10 @@ async def test_every_audit_row_of_a_run_carries_its_scope(make_runtime):
     await runtime.cancel(run.id, actor=VEX, wait=0)
     rows = await audit_rows("job.")
     assert [(r["action"], r["scope"]) for r in rows] == [
-        ("job.enqueue", "456"), ("job.pause", "456"), ("job.resume", "456"), ("job.cancel", "456"),
+        ("job.enqueue", "456"),
+        ("job.pause", "456"),
+        ("job.resume", "456"),
+        ("job.cancel", "456"),
     ]
 
 

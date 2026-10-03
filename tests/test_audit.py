@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import psycopg
 import pytest
-from conftest import AUDIT, DSN, audit_rows
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from vex_platform import migrations
 from vex_platform.audit import SYSTEM, Actor, AuditEntry, target
 from vex_platform.audit import psycopg as audit_pg
 from vex_platform.audit import sqlalchemy as audit_sa
+
+from .conftest import AUDIT, DSN, audit_rows
 
 pytestmark = pytest.mark.usefixtures("dsn")
 
@@ -35,8 +36,9 @@ async def test_psycopg_record_joins_the_transaction():
         await conn.rollback()
         row_id = await audit_pg.record(
             conn,
-            AuditEntry("vod.update", VEX, "vod:1", scope="456", before={"title": "a"}, after={"title": "b"},
-                       request_id="r1"),
+            AuditEntry(
+                "vod.update", VEX, "vod:1", scope="456", before={"title": "a"}, after={"title": "b"}, request_id="r1"
+            ),
             table=AUDIT,
         )
         await conn.commit()
@@ -44,7 +46,11 @@ async def test_psycopg_record_joins_the_transaction():
     assert row["id"] == row_id
     assert (row["actor_kind"], row["actor_id"], row["actor_login"], row["via"]) == ("user", "1", "vex", "web")
     assert (row["before"], row["after"], row["outcome"], row["request_id"]) == (
-        {"title": "a"}, {"title": "b"}, "ok", "r1")
+        {"title": "a"},
+        {"title": "b"},
+        "ok",
+        "r1",
+    )
     assert row["at"] is not None
 
 
@@ -108,10 +114,14 @@ async def test_migration_apply_through_sqlalchemy(driver):
         migrations.apply(conn, migrations.jobs_sql(1, schema="mig_test_jobs"))
         migrations.apply(conn, migrations.audit_sql(1, table="mig_test.audit_log"))
         path = conn.exec_driver_sql("SHOW search_path").scalar_one()
-        tables = conn.exec_driver_sql(
-            "SELECT table_schema || '.' || table_name FROM information_schema.tables"
-            " WHERE left(table_schema, 8) = 'mig_test' ORDER BY 1"
-        ).scalars().all()
+        tables = (
+            conn.exec_driver_sql(
+                "SELECT table_schema || '.' || table_name FROM information_schema.tables"
+                " WHERE left(table_schema, 8) = 'mig_test' ORDER BY 1"
+            )
+            .scalars()
+            .all()
+        )
         conn.exec_driver_sql("DROP SCHEMA mig_test CASCADE")
         conn.exec_driver_sql("DROP SCHEMA mig_test_jobs CASCADE")
         return path, tables

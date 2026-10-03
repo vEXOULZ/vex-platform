@@ -4,12 +4,12 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 import psycopg
 import pytest
 import structlog
-from conftest import AUDIT, DSN, audit_rows, wait_for
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
@@ -30,6 +30,8 @@ from vex_platform.jobs import Registry
 from vex_platform.jobs.router import jobs_router
 from vex_platform.jobs.run import STATES
 from vex_platform.logging import configure_logging, redact
+
+from .conftest import AUDIT, DSN, audit_rows, wait_for
 
 
 def auth(request: Request) -> None:
@@ -105,8 +107,15 @@ async def test_problem_json_and_request_id():
         r = await c.get("/api/v2/teapot", headers={"x-request-id": "abc123"})
         assert r.status_code == 418 and r.headers["content-type"] == "application/problem+json"
         assert r.headers["x-request-id"] == "abc123"
-        assert r.json() == {"type": "about:blank", "title": "I'm a Teapot", "status": 418, "code": "teapot",
-                            "detail": "short and stout", "request_id": "abc123", "spout": 1}
+        assert r.json() == {
+            "type": "about:blank",
+            "title": "I'm a Teapot",
+            "status": 418,
+            "code": "teapot",
+            "detail": "short and stout",
+            "request_id": "abc123",
+            "spout": 1,
+        }
 
         r = await c.get("/api/v2/nope")
         assert (r.status_code, r.json()["code"]) == (404, "not_found")
@@ -155,7 +164,9 @@ async def test_audit_routes_and_refusals():
 
         rows = await audit_rows()
         assert [(r["action"], r["outcome"], r["actor_id"]) for r in rows] == [
-            ("request.denied", "denied", "guest"), ("request.failed", "failed", "vex")]
+            ("request.denied", "denied", "guest"),
+            ("request.failed", "failed", "vex"),
+        ]
         assert rows[0]["detail"] == {"method": "POST", "path": "/api/v2/echo", "status": 403}
 
         r = await c.get("/api/v2/audit", params={"limit": 1}, headers={"x-test-user": "vex"})
@@ -186,15 +197,17 @@ async def test_audit_scopes_own_rows_actor_and_labels():
     async def find_actor(request: Request, login: str) -> tuple[str, str] | None:
         return ("user", "2") if login == "two" else None
 
-    async def labels(request: Request, rows: list[dict]) -> None:
+    async def labels(request: Request, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             row["scope_name"] = {"a": "Alpha", "b": "Beta"}.get(row["scope"])
             row["actor_login"] = row["actor_login"] or ("two" if row["actor_id"] == "2" else None)
 
     app = FastAPI()
     install_error_handlers(app)
-    app.include_router(audit_router(connect, auth, table=AUDIT, visible_scopes=visible, find_actor=find_actor,
-                                    labels=labels), prefix="/api/v2")
+    app.include_router(
+        audit_router(connect, auth, table=AUDIT, visible_scopes=visible, find_actor=find_actor, labels=labels),
+        prefix="/api/v2",
+    )
 
     async def actions(user: str, **params) -> list[str]:
         r = await c.get("/api/v2/audit", params=params, headers={"x-test-user": user})
