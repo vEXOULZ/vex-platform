@@ -25,8 +25,8 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any, Literal, NamedTuple
 
 import procrastinate
+import procrastinate.worker
 import structlog
-from procrastinate.jobs import Status
 from psycopg import AsyncConnection, errors
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -44,6 +44,9 @@ from .run import ACTIVE, SELECT, STATES, JobRun
 log = structlog.get_logger(__name__)
 
 TASK_NAME = "vex.run"
+# A ``doing`` job whose worker sent no heartbeat for this long, or has no worker row, is stalled
+# (the default of procrastinate's get_stalled_jobs).
+STALLED_AFTER = 30.0
 OnDuplicate = Literal["return", "merge", "raise"]
 Hook = Callable[[str, JobRun], Any]
 
@@ -79,6 +82,38 @@ class Limiter:
     def set_limit(self, limit: int) -> None:
         self.limit = limit
         self._changed.set()
+
+
+class _Slots:
+    """Stands in for the procrastinate worker's semaphore, so the worker fetches a job (and marks it
+    ``doing``) only once the limiter has a free slot. A run waiting for a slot keeps a ``todo`` job:
+    nothing is left ``doing`` if the process dies while it waits, and pause or cancel can drop it."""
+
+    def __init__(self, limiter: Limiter) -> None:
+        self.limiter = limiter
+
+    async def acquire(self) -> bool:
+        await self.limiter.acquire()
+        return True
+
+    def release(self) -> None:
+        self.limiter.release()
+
+
+class _Worker(procrastinate.worker.Worker):
+    """procrastinate's worker, fetching through the runtime's slots instead of its own semaphore.
+    ``_job_semaphore`` is private to procrastinate; the exact pin in pyproject.toml keeps it known,
+    and test_waiting_run_keeps_a_todo_job fails if an upgrade changes it."""
+
+    slots: _Slots
+
+    @property
+    def _job_semaphore(self) -> Any:
+        return self.slots
+
+    @_job_semaphore.setter
+    def _job_semaphore(self, value: Any) -> None:
+        pass  # procrastinate's own asyncio.Semaphore, created in __init__ and _run_loop: unused
 
 
 class JobRuntime:
@@ -160,17 +195,20 @@ class JobRuntime:
             asyncio.create_task(self.events.run_forever(), name="vex-jobs-events"),
             asyncio.create_task(self._reconcile_forever(), name="vex-jobs-reconcile"),
         ]
+        worker = _Worker(
+            app=self.app,
+            name=self.worker_name,
+            concurrency=self.max_concurrency,
+            install_signal_handlers=False,
+            shutdown_graceful_timeout=self.shutdown_timeout,
+            fetch_job_polling_interval=self.poll_interval,
+            abort_job_polling_interval=1.0,
+            listen_notify=True,
+            delete_jobs="always",
+        )
+        worker.slots = _Slots(self.limiter)
         self._worker = asyncio.create_task(
-            self.app.run_worker_async(
-                name=self.worker_name,
-                concurrency=self.max_concurrency,
-                install_signal_handlers=False,
-                shutdown_graceful_timeout=self.shutdown_timeout,
-                fetch_job_polling_interval=self.poll_interval,
-                abort_job_polling_interval=1.0,
-                listen_notify=True,
-                delete_jobs="always",
-            ),
+            worker.run(),  # type: ignore[no-untyped-call]  # procrastinate leaves it unannotated
             name="vex-jobs-worker",
         )
 
@@ -267,11 +305,26 @@ class JobRuntime:
         return await self._update(conn, run.id, procrastinate_job_id=job_id)
 
     async def _drop_job(self, conn: AsyncConnection[Any], run: JobRun) -> None:
-        """Cancel the run's procrastinate job if it has not started (a running one ends by itself)."""
-        if run.procrastinate_job_id is not None:
-            await self.app.job_manager.cancel_job_by_id_async(
-                run.procrastinate_job_id, delete_job=True, connection=conn
-            )
+        """Cancel the run's procrastinate job if it has not started, or end it if the worker that took
+        it is gone (its lock would hold later jobs back for good). A live worker's job ends by itself."""
+        if run.procrastinate_job_id is not None and not await self.app.job_manager.cancel_job_by_id_async(
+            run.procrastinate_job_id, delete_job=True, connection=conn
+        ):
+            await self._finish_stalled(conn, run.procrastinate_job_id)
+
+    async def _finish_stalled(self, conn: AsyncConnection[Any], job_id: int) -> bool:
+        """Fail and delete job ``job_id`` if it is ``doing`` and stalled (no worker row, or no heartbeat
+        for STALLED_AFTER seconds, procrastinate's own definition); returns whether it was. What
+        ``finish_job_by_id_async(job_id, FAILED, delete_job=True)`` does, but on ``conn`` so it commits
+        with the run's change, and without an error when another process got there first."""
+        row = await self._one(
+            conn,
+            "DELETE FROM procrastinate_jobs j WHERE j.id = %s AND j.status = 'doing' AND NOT EXISTS ("
+            " SELECT 1 FROM procrastinate_workers w WHERE w.id = j.worker_id"
+            " AND w.last_heartbeat >= now() - make_interval(secs => %s)) RETURNING j.id",
+            (job_id, STALLED_AFTER),
+        )
+        return row is not None
 
     async def _audit(
         self,
@@ -786,8 +839,9 @@ class JobRuntime:
     async def reconcile(self) -> int:
         """Bring ``job_runs`` and procrastinate back in line after a crash or a lost job:
         a ``running`` run whose job is gone, finished or stalled goes back to ``queued``, and a
-        ``queued`` run without a waiting job gets one. Returns how many runs it touched."""
-        stalled = {j.id for j in await self.app.job_manager.get_stalled_jobs(task_name=TASK_NAME)}
+        ``queued`` run without a waiting job (or whose job is stalled) gets a new one, and a stalled
+        ``vex.run`` job that is no longer its run's current one is ended so it stops holding its
+        lock. Returns how many runs it touched."""
         touched = 0
         async with self.transaction() as c:
             rows = await self._all(
@@ -801,19 +855,31 @@ class JobRuntime:
                 status = row["job_status"]
                 if run.id in self._tasks:
                     continue
+                if status == "doing":
+                    assert run.procrastinate_job_id is not None  # the join found its job
+                    if not await self._finish_stalled(c, run.procrastinate_job_id):
+                        continue  # a live worker has it
+                    log.warning("jobs.stalled_job_ended", run_id=run.id, job_id=run.procrastinate_job_id)
+                elif status == "todo" and run.state == "queued":
+                    continue
                 if run.state == "running":
-                    if status == "doing" and run.procrastinate_job_id not in stalled:
-                        continue  # another live worker has it
-                    if status == "doing" and run.procrastinate_job_id is not None:
-                        await self.app.job_manager.finish_job_by_id_async(
-                            run.procrastinate_job_id, Status.FAILED, delete_job=True
-                        )
                     run = await self._update(c, run.id, state="queued")
                     log.warning("jobs.recovered", run_id=run.id, kind=run.kind, step=run.step)
-                elif status in ("todo", "doing"):
-                    continue
                 await self._defer(c, run)
                 touched += 1
+            # Stalled jobs no active run points at any more (a resume deferred a newer one): their
+            # lock would keep the newer job from ever being fetched.
+            orphans = await self._all(
+                c,
+                "DELETE FROM procrastinate_jobs j WHERE j.task_name = %s AND j.status = 'doing'"
+                " AND NOT EXISTS (SELECT 1 FROM procrastinate_workers w WHERE w.id = j.worker_id"
+                " AND w.last_heartbeat >= now() - make_interval(secs => %s))"
+                " AND NOT EXISTS (SELECT 1 FROM job_runs r WHERE r.procrastinate_job_id = j.id"
+                " AND r.state IN ('queued', 'running')) RETURNING j.id, j.lock",
+                (TASK_NAME, STALLED_AFTER),
+            )
+            for orphan in orphans:
+                log.warning("jobs.orphan_job_ended", job_id=orphan["id"], lock=orphan["lock"])
         return touched
 
     async def _reconcile_forever(self) -> None:
@@ -854,7 +920,7 @@ class JobRuntime:
             log.info("jobs.stale_job", run_id=run_id, job_id=job_id, state=run.state)
             return
         kind = self.registry.kinds.get(run.kind)
-        await self.limiter.acquire()
+        # The worker took this job only once a run slot was free (_Slots) and frees it when this returns.
         try:
             async with self.transaction() as c:
                 row = await self._one(
@@ -865,7 +931,7 @@ class JobRuntime:
                     (run_id, job_id),
                 )
             if row is None:
-                return  # paused or cancelled while waiting for a slot
+                return  # paused or cancelled since it was fetched
             run = JobRun.from_row(row)
             if kind is None:
                 async with self.transaction() as c:
@@ -880,7 +946,6 @@ class JobRuntime:
         finally:
             self._tasks.pop(run_id, None)
             self._cancelling.discard(run_id)
-            self.limiter.release()
 
     async def _run_steps(self, run: JobRun, kind: JobKind) -> None:
         ctx = StepContext(self, run, kind)

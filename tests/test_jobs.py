@@ -384,6 +384,90 @@ async def test_reconcile_recovers_a_crashed_run(make_runtime):
     assert calls == ["b", "c"]
 
 
+async def jobs_sql(sql: str, params: Any = None) -> list[tuple[Any, ...]]:
+    async with await psycopg.AsyncConnection.connect(DSN, autocommit=True) as conn:
+        await conn.execute("SET search_path TO jobs")  # procrastinate's triggers use unqualified names
+        cur = await conn.execute(sql, params)
+        return list(await cur.fetchall()) if cur.description else []
+
+
+def locked(calls: list[str]) -> Registry:
+    return three_steps(calls, lock=lambda run: run.subject)
+
+
+async def test_waiting_run_keeps_a_todo_job(make_runtime):
+    """A run waiting for a slot is not fetched, so a crash meanwhile leaves no `doing` job behind."""
+    registry = Registry()
+    release = asyncio.Event()
+
+    @registry.step()
+    async def block(ctx):
+        await release.wait()
+
+    registry.kind("block", ["block"])
+    runtime = await make_runtime(registry, concurrency=1)
+    first = (await runtime.enqueue("block")).run
+    await wait_for(runtime, first.id, ["running"])
+    second = (await runtime.enqueue("block")).run
+    await asyncio.sleep(1.0)  # several poll intervals
+    assert await jobs_sql(
+        "SELECT status::text FROM procrastinate_jobs WHERE id = %s", (second.procrastinate_job_id,)
+    ) == [("todo",)]
+    release.set()
+    await wait_for(runtime, second.id, ["succeeded"])
+
+
+async def test_reconcile_frees_a_queued_runs_stalled_job(make_runtime):
+    calls: list[str] = []
+    runtime = await make_runtime(locked(calls), start=False)
+    run = (await runtime.enqueue("abc", subject="vod:1")).run
+    # As a crash leaves it: the job fetched (doing, its worker gone) but the run still queued.
+    await jobs_sql("UPDATE procrastinate_jobs SET status = 'doing', worker_id = NULL")
+    await runtime.start()  # reconciles first
+    run = await wait_for(runtime, run.id, ["succeeded"])
+    assert calls == ["a", "b", "c"]
+
+
+async def test_reconcile_ends_a_stalled_job_its_run_left_behind(make_runtime):
+    calls: list[str] = []
+    runtime = await make_runtime(locked(calls), start=False)
+    run = (await runtime.enqueue("abc", subject="vod:1")).run
+    stuck = run.procrastinate_job_id
+    # What 0.6.0 left: the stalled job kept its lock through a pause and the resume that followed.
+    await jobs_sql("UPDATE procrastinate_jobs SET status = 'doing', worker_id = NULL")
+    await jobs_sql("UPDATE job_runs SET state = 'paused', procrastinate_job_id = NULL WHERE id = %s", (run.id,))
+    run = await runtime.resume(run.id)
+    assert run.procrastinate_job_id != stuck
+    await runtime.start()
+    await wait_for(runtime, run.id, ["succeeded"])
+    assert await jobs_sql("SELECT id FROM procrastinate_jobs WHERE id = %s", (stuck,)) == []
+
+
+async def test_pause_ends_a_stalled_job_but_not_a_live_ones(make_runtime):
+    calls: list[str] = []
+    runtime = await make_runtime(locked(calls), start=False)
+    stalled = (await runtime.enqueue("abc", subject="vod:1")).run
+    live = (await runtime.enqueue("abc", subject="vod:2")).run
+    worker_id = await runtime.app.job_manager.register_worker()  # a fresh heartbeat
+    await jobs_sql(
+        "UPDATE procrastinate_jobs SET status = 'doing', worker_id = NULL WHERE id = %s",
+        (stalled.procrastinate_job_id,),
+    )
+    await jobs_sql(
+        "UPDATE procrastinate_jobs SET status = 'doing', worker_id = %s WHERE id = %s",
+        (worker_id, live.procrastinate_job_id),
+    )
+
+    await runtime.pause(stalled.id)
+    await runtime.pause(live.id)
+    left = await jobs_sql("SELECT id FROM procrastinate_jobs ORDER BY id")
+    assert left == [(live.procrastinate_job_id,)]  # the live worker's job ends by itself
+
+    await runtime.resume(stalled.id)
+    await runtime.start()
+    await wait_for(runtime, stalled.id, ["succeeded"])
+
+
 async def test_enqueue_joins_the_callers_transaction(make_runtime):
     calls: list[str] = []
     runtime = await make_runtime(three_steps(calls), start=False)

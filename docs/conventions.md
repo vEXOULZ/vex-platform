@@ -115,6 +115,7 @@ paused ◀──────┘
 - `queued`, `running` and `paused` are **active**; `succeeded`, `failed` and `cancelled` are **finished**.
 - A run pauses before a step listed in its own `pause_before`, or, when that is NULL, in its kind's. `Registry.set_pause_before(kind, steps)` changes a kind's list while runs are going (an admin setting, for example). Gates are checked when a run moves on to a step, so the change applies from each run's next step boundary.
 - A run in `running` goes back to `queued` when the process stops (shutdown, crash, or a stalled worker). The next start resumes it at its checkpoint; `reconcile()` does this at startup and every `reconcile_interval` seconds.
+- A procrastinate job left `doing` by a dead worker (no worker row, or no heartbeat for 30 seconds) is **stalled**, and it would hold its lock back from later runs for good. `reconcile()` ends it and queues a fresh job, whether its run was `running` or still `queued`, and also ends stalled `vex.run` jobs whose run has moved on to another job. `pause` and `cancel` end a stalled job too; a live worker's job is left to end by itself.
 
 ### Steps
 
@@ -168,6 +169,7 @@ async def download(ctx: StepContext) -> None:
 
 - `concurrency` is how many runs execute at once, and `set_concurrency(n)` changes it live.
 - It can go up to `max_concurrency`, which is the procrastinate worker's own ceiling.
+- The worker fetches a job only once a slot is free, so a run waiting for a slot keeps a `todo` job: a crash meanwhile leaves nothing `doing`, and `pause` or `cancel` can drop it.
 
 ### Hooks
 
