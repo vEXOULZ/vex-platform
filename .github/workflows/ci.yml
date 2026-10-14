@@ -7,9 +7,9 @@ on:
 
 jobs:
   conventions:
-    uses: vEXOULZ/conventions/.github/workflows/conventions-check.yml@v1.0.0
+    uses: vEXOULZ/conventions/.github/workflows/conventions-check.yml@v1.0.1
     secrets: inherit
   ci:
-    uses: vEXOULZ/conventions/.github/workflows/python-ci.yml@v1.0.0
+    uses: vEXOULZ/conventions/.github/workflows/python-ci.yml@v1.0.1
     with:
       postgres: true
