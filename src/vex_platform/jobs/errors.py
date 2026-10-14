@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 
 class JobNotFound(LookupError):
     def __init__(self, run_id: int) -> None:
@@ -24,6 +26,18 @@ class StepError(RuntimeError):
 
 class StepRefused(StepError):
     """A step that must not run for this subject: the run fails at once instead of retrying."""
+
+
+class StepDeferred(StepError):
+    """A step that can't run until ``until`` (a timezone-aware datetime), such as one waiting for a daily
+    quota to reset: the run is queued again at the same step to start then, with its attempts back at 0.
+    How many times a run may be deferred is the step's own call (keep a count in ``ctx.payload``)."""
+
+    def __init__(self, message: str, until: dt.datetime) -> None:
+        super().__init__(message)
+        if until.tzinfo is None:
+            raise ValueError("StepDeferred needs a timezone-aware datetime")
+        self.until = until
 
 
 class RunStopped(Exception):

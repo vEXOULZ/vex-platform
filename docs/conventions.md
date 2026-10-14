@@ -134,6 +134,7 @@ async def download(ctx: StepContext) -> None:
 - **State:** `ctx.payload` is the run's state across steps and attempts. It is saved after each step, or on demand with `ctx.save()`.
 - **Errors:**
   - Raise `StepRefused` for a failure that another attempt won't fix; the run fails at once.
+  - Raise `StepDeferred(message, until)` when the step can't run before a known time, such as a daily quota resetting. The run is queued again at the same step with `not_before = until` and its attempts back at 0, and `last_error` holds the message. A run may be deferred any number of times, so a step that should give up keeps its own count in `ctx.payload` and raises `StepRefused` past it. Like a retry backoff, a deferred run keeps its lock while it waits.
   - Any other exception is retried after a backoff of `retry_base_seconds · 2^(attempt-1)`, up to `max_attempts` attempts. The retry resumes at the failed step.
 - **Custom context:** `context_factory` lets an application wrap `StepContext` in its own context class, such as twitch-archive's `JobContext`.
 
@@ -173,7 +174,7 @@ async def download(ctx: StepContext) -> None:
 
 ### Hooks
 
-`runtime.hooks.append(fn)` calls `fn(event, run)` after `started`, `succeeded`, `failed`, `cancelled`, `paused`, `requeued` (stopped by shutdown) and `retrying` (a failed attempt that will be retried). Use hooks for metrics, such as doomtp-bot's Prometheus counters.
+`runtime.hooks.append(fn)` calls `fn(event, run)` after `started`, `succeeded`, `failed`, `cancelled`, `paused`, `requeued` (stopped by shutdown), `retrying` (a failed attempt that will be retried) and `deferred` (a step raised `StepDeferred`). Use hooks for metrics, such as doomtp-bot's Prometheus counters.
 
 ## Logging
 

@@ -36,7 +36,7 @@ from ..actor import SYSTEM, Actor
 from ..audit import psycopg as audit_pg
 from ..audit.model import AuditEntry
 from .context import StepContext
-from .errors import InvalidJob, JobConflict, JobNotFound, RunStopped, StepError, StepRefused
+from .errors import InvalidJob, JobConflict, JobNotFound, RunStopped, StepDeferred, StepError, StepRefused
 from .events import RunEvents
 from .registry import JobKind, Registry
 from .run import ACTIVE, SELECT, STATES, JobRun
@@ -1058,6 +1058,13 @@ class JobRuntime:
             if run.cancel_requested:
                 run = await self._update(c, run.id, state="cancelled", finished_at=_now(), **common)
                 event = "cancelled"
+            elif isinstance(exc, StepDeferred):
+                run = await self._update(
+                    c, run.id, state="queued", not_before=max(exc.until, _now()), **{**common, "attempts": 0}
+                )
+                run = await self._defer(c, run)
+                ctx.log.warning("step %s deferred until %s: %s", current, exc.until.isoformat(), exc)
+                event = "deferred"
             elif isinstance(exc, StepRefused) or attempts >= max_attempts:
                 run = await self._update(c, run.id, state="failed", finished_at=_now(), **common)
                 ctx.log.error("failed: %s", exc)
