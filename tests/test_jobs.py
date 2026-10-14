@@ -15,6 +15,7 @@ from vex_platform.jobs import (
     Registry,
     RunStopped,
     StepContext,
+    StepDeferred,
     StepError,
     StepRefused,
 )
@@ -201,6 +202,35 @@ async def test_refused_step_fails_at_once(make_runtime):
     runtime = await make_runtime(registry)
     run = await wait_for(runtime, (await runtime.enqueue("refuse")).run.id, ["failed"])
     assert (run.attempts, run.last_error) == (1, "no consent")
+
+
+async def test_deferred_step_waits_until_then_with_fresh_attempts(make_runtime):
+    registry = Registry()
+    until = dt.datetime.now(dt.UTC) + dt.timedelta(hours=6)
+    events: list[str] = []
+
+    @registry.step()
+    async def limited(ctx):
+        ctx.payload["deferrals"] = ctx.payload.get("deferrals", 0) + 1
+        raise StepDeferred("daily limit reached", until)
+
+    registry.kind("limited", ["limited"], retry_base_seconds=0, max_attempts=1)
+    runtime = await make_runtime(registry)
+    runtime.hooks.append(lambda event, run: events.append(event))
+    run = (await runtime.enqueue("limited")).run
+    deadline = time.monotonic() + 10
+    while (run := await runtime.get(run.id)).last_error is None and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    # max_attempts=1 would have failed it: a deferral is not an attempt.
+    assert (run.state, run.step, run.attempts, run.last_error) == ("queued", "limited", 0, "daily limit reached")
+    assert run.not_before == until
+    assert run.payload == {"deferrals": 1}
+    assert "deferred" in events
+
+
+def test_deferred_needs_an_aware_datetime():
+    with pytest.raises(ValueError):
+        StepDeferred("later", dt.datetime(2026, 1, 1))
 
 
 async def test_interrupt_cancel(make_runtime):
