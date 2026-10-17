@@ -11,7 +11,7 @@ dependencies = [
     "procrastinate==3.10.0",
     "psycopg[binary,pool]>=3.2",
     "fastapi>=0.115",
-    "pydantic>=2.7",
+    "pydantic>=2.14.1",
     "structlog>=24.1",
 ]
 
