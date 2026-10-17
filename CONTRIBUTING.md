@@ -51,6 +51,9 @@ Every pull request runs:
 - **`conventions / check`:** the synced files match the version pinned in `.conventions.toml`, and the
   repo follows the conventions for its profile. A public repo is also checked for private
   infrastructure (addresses, server paths).
+- **`conventions / version`:** every file that carries the version (`pyproject.toml`, `uv.lock`,
+  `__version__`, `package.json`, `package-lock.json`) says the same. In a `flow = "dev"` repo a pull
+  request into `main` must also raise it, to a version with no tag yet.
 - **`ci / …`:** the repo's lint, tests and build, from the reusable workflows in
   [vEXOULZ/conventions](https://github.com/vEXOULZ/conventions).
 
